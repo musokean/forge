@@ -18,6 +18,7 @@ try:
     _HAS_MSVCRT = True
 except ImportError:
     _HAS_MSVCRT = False
+    msvcrt = None  # Linux 占位：让测试 patch("src.keypress.msvcrt") 有目标可打（CI #1 实测）
 
 
 def poll_key():
