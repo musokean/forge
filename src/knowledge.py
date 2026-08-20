@@ -15,6 +15,8 @@
 fts5 虚拟表（title + content 全文索引）；trigram 不可用时降级 unicode61。
 MCP Server 暴露留 M5 之后。
 """
+
+from __future__ import annotations
 import json
 import os
 import re

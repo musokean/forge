@@ -10,6 +10,8 @@
 
 黄金集存 config/golden.yaml（配置驱动，/eval add 可扩展），报告支持 Markdown 导出。
 """
+
+from __future__ import annotations
 import asyncio
 import datetime
 import os

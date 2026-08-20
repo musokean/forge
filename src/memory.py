@@ -7,6 +7,8 @@
 
 存储：独立 SQLite（data/memory.db，路径可配 memory.db_path），关键词匹配召回（不引入 embedding 依赖）。
 """
+
+from __future__ import annotations
 import os
 import re
 import sqlite3

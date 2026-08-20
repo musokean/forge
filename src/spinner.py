@@ -11,6 +11,8 @@
     ... await 首字 ...
     spinner_stop(t)
 """
+
+from __future__ import annotations
 import asyncio
 import sys
 
