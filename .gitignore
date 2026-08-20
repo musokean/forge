@@ -9,3 +9,4 @@ __pycache__/
 *.pyc
 release/
 .workbuddy/
+push_github.cmd

@@ -19,8 +19,19 @@ from src.circuit import (
 )
 
 
+# ===================== 0) 全局隔离 =====================
+class _Isolated(unittest.TestCase):
+    """每个测试后复位熔断器注册表——防止污染后续测试文件
+    （老大 2026-08-20：CI 里 test_circuit_breaker 熔断角色 b 后，
+     test_error_resilience 的降级测试全被「熔断中」拦截）。"""
+
+    def tearDown(self):
+        reset_circuit_registry()
+        super().tearDown()
+
+
 # ===================== 1) 单熔断器三态机 =====================
-class TestBreakerStates(unittest.TestCase):
+class TestBreakerStates(_Isolated):
     def test_closed_to_open_on_threshold(self):
         b = CircuitBreaker("x", failure_threshold=3, cooldown=30, clock=lambda: 1000)
         self.assertEqual(b.state, "closed")
@@ -76,7 +87,7 @@ class TestBreakerStates(unittest.TestCase):
 
 
 # ===================== 2) 注册表单例 =====================
-class TestRegistry(unittest.TestCase):
+class TestRegistry(_Isolated):
     def test_singleton_and_config_defaults(self):
         reset_circuit_registry()
         r1 = get_circuit_registry({"circuit_breaker": {"failure_threshold": 2, "cooldown": 10}})
@@ -111,7 +122,7 @@ _CGFG = {
 }
 
 
-class TestChatIntegration(unittest.IsolatedAsyncioTestCase):
+class TestChatIntegration(_Isolated, unittest.IsolatedAsyncioTestCase):
     async def test_breaker_skips_failed_role_then_fallback(self):
         reset_circuit_registry()
         from src import llm
@@ -162,7 +173,7 @@ class TestChatIntegration(unittest.IsolatedAsyncioTestCase):
                 await llm.chat(cfg, [{"role": "user", "content": "hi"}], role="default")
 
 
-class TestStreamChatIntegration(unittest.IsolatedAsyncioTestCase):
+class TestStreamChatIntegration(_Isolated, unittest.IsolatedAsyncioTestCase):
     async def test_stream_fallback_and_breaker(self):
         reset_circuit_registry()
         cfg = {
@@ -207,7 +218,7 @@ class TestStreamChatIntegration(unittest.IsolatedAsyncioTestCase):
 
 
 # ===================== 4) CLI 命令 =====================
-class TestCli(unittest.TestCase):
+class TestCli(_Isolated):
     def test_circuit_command_shows_open(self):
         reset_circuit_registry()
         reg = get_circuit_registry({"circuit_breaker": {"failure_threshold": 1, "cooldown": 30}})

@@ -100,19 +100,22 @@ class Agent:
     # ---------- A05b 滚动摘要 + 工具输出裁剪（#3 上下文管理补全） ----------
 
     async def _summarize(self, text: str, purpose: str, max_in: int = 8000, max_out: int = 180):
-        """用 fallback 便宜模型压缩文本（A05b 杠杆②）。失败返回 None，绝不阻塞主流程。"""
+        """用便宜模型压缩文本（A05b 杠杆②）。失败返回 None，绝不阻塞主流程。
+
+        角色选择：优先 fallback（若有），否则用 default——默认配置精简后不一定有 fallback
+        （老大 2026-08-20 精简 roles 后 _fallback_role 返回 None 导致摘要静默失效）。
+        """
         if not text.strip():
             return ""
         from .llm import _fallback_role  # 延迟导入避免循环
         fb = _fallback_role(self.cfg, self.role)
-        if fb is None:
-            return None  # 没有降级角色可做摘要，交调用方兜底
+        use_role = fb if fb else "default"
         msgs = [
             {"role": "system", "content": "你是摘要助手，把输入压缩成要点，保留数字、路径、结论等关键信息，只输出摘要本身。"},
             {"role": "user", "content": f"[{purpose}]\n{text[:max_in]}"},
         ]
         try:
-            resp = await chat(self.cfg, msgs, role=fb)
+            resp = await chat(self.cfg, msgs, role=use_role)
             self._add_usage(getattr(resp, "usage", None))  # 摘要调用诚实记账
             out = (resp.choices[0].message.content or "").strip()
             return out[:max_out] or None

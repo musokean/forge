@@ -9,10 +9,11 @@ from .approval import Approver
 from .structured import RoleBrief, ask_structured
 from .llm import chat
 
-# 默认讨论角色（仅当 config/models.yaml 的 debate.roles 缺失时才用，作为兜底）
+# 默认讨论角色（仅当 config/models.yaml 的 debate.roles 缺失/为空时才用，作为兜底）
+# 统一绑 default：默认配置只保证有 default 角色（老大 2026-08-20 精简后 reasoning/fallback 可能不存在）
 DEFAULT_DEBATE_ROLES = [
-    {"name": "正方", "model": "reasoning", "persona": "你代表正方立场，坚定论证这个观点/方案的合理性，找出并强调它的优点与价值。"},
-    {"name": "反方", "model": "fallback", "persona": "你代表反方立场，质疑并找出这个观点/方案的漏洞、风险与代价，客观反驳。"},
+    {"name": "正方", "model": "default", "persona": "你代表正方立场，坚定论证这个观点/方案的合理性，找出并强调它的优点与价值。"},
+    {"name": "反方", "model": "default", "persona": "你代表反方立场，质疑并找出这个观点/方案的漏洞、风险与代价，客观反驳。"},
     {"name": "裁判", "model": "default", "persona": "你是中立的裁判，不偏袒任何一方，综合双方观点，给出客观、平衡、可执行的最终结论。"},
 ]
 
@@ -71,6 +72,10 @@ async def debate(question, roles=None, rounds=None, judge_structured=False):
     if roles is None:
         roles, cfg_rounds = get_debate_roles()
         rounds = rounds if rounds is not None else cfg_rounds
+        if not roles:
+            # 配置里显式置空（默认不配辩论）但用户/调用方仍要求辩论 → 用内置默认阵容兜底，
+            # 而不是空阵容崩溃（老大 2026-08-20：默认辩论置空后 test_structured/test_error_resilience 崩 IndexError）
+            roles = DEFAULT_DEBATE_ROLES
     rounds = rounds or 2
     debaters = [r for r in roles if "裁判" not in r["name"]]
     judges = [r for r in roles if "裁判" in r["name"]]
@@ -106,6 +111,9 @@ async def debate(question, roles=None, rounds=None, judge_structured=False):
                 RoleBrief,
             )
         return await j.run(f"以下是各方讨论记录：\n{full}\n\n请给出最终结论。")
+    if not transcript:
+        # 空阵容防护（老大 2026-08-20：默认辩论阵容已置空，直接调 debate() 不再崩 IndexError）
+        raise ValueError("辩论阵容为空：请在 /config 里按 d 配置辩论阵容（正方/反方/裁判）")
     return transcript[-1]["text"]
 
 
