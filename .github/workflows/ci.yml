@@ -38,7 +38,7 @@ jobs:
 
       - name: Run offline test suite (mock-only, no network / no API keys)
         run: |
-          python -m pytest -q \
+          python -m pytest -q -rf \
             test_router.py \
             test_interrupt.py \
             test_eval.py \
@@ -51,7 +51,15 @@ jobs:
             test_error_resilience.py \
             test_context_mgmt.py \
             test_trace.py \
-            test_structured.py
+            test_structured.py > /tmp/pytest.log 2>&1
+          status=$?
+          if [ $status -ne 0 ]; then
+            echo "::error::pytest exit=$status"
+            grep -E "^(ERROR|FAILED)" /tmp/pytest.log | head -40 | sed 's/^/::error::/'
+            tail -80 /tmp/pytest.log | sed 's/^/::error::/'
+          fi
+          cat /tmp/pytest.log
+          exit $status
         timeout-minutes: 15
 
       - name: Verify package imports cleanly
