@@ -4,6 +4,8 @@
   forge                # 进入交互式对话（一直聊，/exit 退出）
   forge "你的问题"      # 单次问答
 """
+from __future__ import annotations  # py3.9 兼容：X | None 注解（CI #2 实测 main.py:159 TypeError）
+
 import asyncio
 import datetime
 import os
