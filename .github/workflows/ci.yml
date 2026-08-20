@@ -70,19 +70,22 @@ jobs:
           if-no-files-found: ignore
 
       - name: Create diagnostic issue with pytest log
-        if: failure() && matrix.python-version == '3.11'
+        if: failure()
         env:
+          PYVER: ${{ matrix.python-version }}
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
           python - <<'PYEOF'
           import json, os
           with open("/tmp/pytest.log", encoding="utf-8", errors="replace") as f:
               log = f.read()[:16000]
-          body = f"## CI pytest log (py3.11, run {os.environ.get('GITHUB_RUN_NUMBER','?')})\n\n```\n{log}\n```"
+          pyver = os.environ.get('PYVER', '?')
+          runnum = os.environ.get('GITHUB_RUN_NUMBER', '?')
+          body = f"## CI pytest log (py{pyver}, run {runnum})\n\n```\n{log}\n```"
           import urllib.request
           req = urllib.request.Request(
               "https://api.github.com/repos/musokean/forge/issues",
-              data=json.dumps({"title": f"CI debug: pytest log (py3.11, run {os.environ.get('GITHUB_RUN_NUMBER','?')})", "body": body}).encode(),
+              data=json.dumps({"title": f"CI debug: pytest log (py{pyver}, run {runnum})", "body": body}).encode(),
               headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json", "User-Agent": "forge-ci"},
               method="POST")
           try:
