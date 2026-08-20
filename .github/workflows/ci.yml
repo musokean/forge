@@ -1,0 +1,133 @@
+name: CI
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+    branches: [main, master]
+
+jobs:
+  # ========== 主 CI：纯 mock 测试，无需 API key ==========
+  test:
+    name: Tests (Python ${{ matrix.python-version }})
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python-version: ["3.9", "3.11", "3.13"]
+    defaults:
+      run:
+        working-directory: ./
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          pip install --upgrade pip
+          pip install -e . --no-cache-dir
+          pip install --no-cache-dir --no-build-isolation pytest
+
+      - name: Copy example config (no real keys needed, but keep import path valid)
+        run: |
+          if [ ! -f config/models.yaml ]; then cp config/models.example.yaml config/models.yaml; fi
+
+      - name: Run offline test suite (mock-only, no network / no API keys)
+        run: |
+          python -m pytest -q \
+            test_router.py \
+            test_interrupt.py \
+            test_eval.py \
+            test_web.py \
+            test_approval.py \
+            test_knowledge.py \
+            test_circuit_breaker.py \
+            test_skills_memory_reflect.py \
+            test_tasks.py \
+            test_error_resilience.py \
+            test_context_mgmt.py \
+            test_trace.py \
+            test_structured.py
+        timeout-minutes: 15
+
+      - name: Verify package imports cleanly
+        run: python -c "import main; print('forge import OK')"
+
+  # ========== 打包验证：build_release.py 产出干净副本 ==========
+  build:
+    name: Release-copy build check
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run release packager
+        run: |
+          python scripts/build_release.py --out /tmp/forge-release --no-smoke
+
+      - name: Verify release copy hygiene
+        run: |
+          cd /tmp/forge-release
+          test ! -d data && echo "OK: no data/"
+          test ! -d exports && echo "OK: no exports/"
+          test ! -d scripts && echo "OK: no scripts/"
+          if grep -rqE "sk-[A-Za-z0-9]{20,}" --include="*.py" --include="*.yaml" --include="*.md" .; then
+            echo "FAIL: leaked API key found"; exit 1
+          else
+            echo "OK: no API key leaks"
+          fi
+          test -f .gitignore && echo "OK: .gitignore present"
+          test -f README.en.md && echo "OK: README.en.md present"
+
+  # ========== 真实模型冒烟（有 secrets 才跑；无 key 自动跳过） ==========
+  model-smoke:
+    name: Model smoke (optional, needs API key)
+    runs-on: ubuntu-latest
+    if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e . --no-cache-dir
+
+      - name: Configure key from secret
+        run: |
+          cp config/models.example.yaml config/models.yaml
+          python - <<'EOF'
+          import re
+          p = "config/models.yaml"
+          s = open(p, encoding="utf-8").read()
+          s = s.replace("api_key: sk-xxx", "api_key: " + "${{ secrets.DEEPSEEK_API_KEY }}", 1)
+          open(p, "w", encoding="utf-8").write(s)
+          print("key injected")
+          EOF
+
+      - name: "Smoke: one real call through the full stack"
+        run: |
+          python -c "
+          import asyncio;
+          from src.agent import Agent;
+          async def main():
+              a = Agent(stream=False, show_spinner=False);
+              out = await a.run('回复OK两个字母');
+              print('answer:', out[:60]);
+              assert out and 'OK' in out
+          asyncio.run(main())
+          "
+        timeout-minutes: 5
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}

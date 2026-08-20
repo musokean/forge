@@ -1,0 +1,11 @@
+# forge 发布仓库忽略项
+# 真实配置（含 API key）与本地数据绝不入库
+config/models.yaml
+data/
+exports/
+*.db
+*.log
+__pycache__/
+*.pyc
+release/
+.workbuddy/

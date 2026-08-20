@@ -1,0 +1,164 @@
+# ==============================================================================
+# forge · 模型与角色配置（唯一需要动的地方）
+# ------------------------------------------------------------------------------
+# 改这一个文件就能调整 forge 的全部「大脑」：
+#   · 用哪个模型 / 哪个端点 / 哪把 key
+#   · 每个角色（主力 / 推理 / 中文 / 降级）干什么、绑哪个模型
+#   · 辩论阵容（正方 / 反方 / 裁判）的人设与模型
+#   · 自动路由用哪个角色做判断
+# 保存即生效，不需要碰任何代码。
+# ==============================================================================
+
+# ---- 1) 模型端点：你有多少个供应商 / 通道就列多少 ----
+#   name      : 内部代号（roles 里引用它，随便起，别重复）
+#   label     : 给人看的名字（显示在启动界面的「角色模型」里）
+#   base_url  : 接口地址（OpenAI 兼容格式，末尾带 /v1）
+#   api_key   : 密钥（也可改成 api_key_env: DEEPSEEK_API_KEY 走环境变量）
+#   model     : 该端点提供的模型名
+models:
+  qwen3_local:
+    label: 千问3-8B·本地
+    base_url: http://192.168.66.54:4000/v1
+    api_key: sk-xxx
+    model: qwen3-8b-awq
+  qwen3_local_b:
+    label: 千问3-8B·本地备用通道
+    base_url: http://192.168.66.54:4000/v1
+    api_key: sk-xxx
+    model: qwen3-8b-awq
+
+  # ================= 预置主流模型（可直接选，未配 key 时面板会引导你输入）=================
+  # 每个都是 OpenAI 兼容接口；`preset: true` 只用于面板里分组显示，可随时删掉某个或整段。
+  # 默认走环境变量（api_key_env），在 /config 里选它时也可以直接输入明文 key 覆盖。
+  deepseek_v4_pro:
+    label: DeepSeek V4 Pro
+    base_url: https://api.deepseek.com/v1
+    api_key: sk-xxx
+    model: deepseek-v4-pro
+    preset: true
+  deepseek_v4_flash:
+    label: DeepSeek V4 Flash
+    base_url: https://api.deepseek.com/v1
+    api_key: sk-xxx
+    model: deepseek-v4-flash
+    preset: true
+  qwen_cloud_plus:
+    label: 通义千问 Plus
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    model: qwen-plus
+    preset: true
+  qwen_cloud_max:
+    label: 通义千问 Max
+    base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+    api_key_env: DASHSCOPE_API_KEY
+    model: qwen-max
+    preset: true
+  openai_gpt4o:
+    label: OpenAI GPT-4o
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4o
+    preset: true
+  openai_gpt4o_mini:
+    label: OpenAI GPT-4o mini
+    base_url: https://api.openai.com/v1
+    api_key_env: OPENAI_API_KEY
+    model: gpt-4o-mini
+    preset: true
+  kimi_k2:
+    label: Kimi K2（月之暗面）
+    base_url: https://api.moonshot.cn/v1
+    api_key_env: MOONSHOT_API_KEY
+    model: kimi-k2
+    preset: true
+  glm_4_plus:
+    label: GLM-4 Plus（智谱）
+    base_url: https://open.bigmodel.cn/api/paas/v4
+    api_key_env: ZHIPU_API_KEY
+    model: glm-4-plus
+    preset: true
+  siliconflow_deepseek_v3:
+    label: SiliconFlow·DeepSeek-V3
+    base_url: https://api.siliconflow.cn/v1
+    api_key_env: SILICONFLOW_API_KEY
+    model: deepseek-ai/DeepSeek-V3
+    preset: true
+
+# ---- 2) 角色：forge 内部用到哪几种「身份」，各绑一个模型 ----
+# 每个角色写三样：
+#   model   : 引用上面 models 的 name（想换模型改这里一处即可）
+#   label   : 显示名（中文，界面上给人看）
+#   purpose : 这个角色拿来干嘛（给自己备忘，也方便以后调整）
+roles:
+  default:   { model: deepseek_v4_flash,   label: 主力,   purpose: 常规对话主力 }
+
+# 需要更多角色时在这里加一行即可（/config 面板可引导添加）：
+#   reasoning: { model: 模型别名, label: 推理, purpose: 复杂推理时 }     # 复杂推理 / 深思熟虑
+#   chinese:   { model: 模型别名, label: 中文文案, purpose: 中文写作 }   # 中文写作 / 润色
+#   fallback:  { model: 模型别名, label: 降级, purpose: 主力失败备用 }   # 主力通道失败时的备用
+# 模型别名 = models 段里定义的 name（如 deepseek_v4_flash / qwen3_local …）
+
+# ---- 3) 自动路由：用哪个角色做「任务类型判断」（建议用最轻快那个）----
+router:
+  role: default
+
+# ---- 4) 辩论阵容：默认不配置（有需要才配，/config 面板可引导添加）----
+# 三个辩手：正方 / 反方 / 裁判（含「裁判」的自动当最终裁判）。
+# 需要辩论时取消下面注释（或 /config 里选「配置辩论阵容」引导添加）：
+#   name    : 辩手名字
+#   model   : 写上面 roles 里的角色名（不是 models 的 name）
+#   persona : 这个角色的人设 / 立场
+debate:
+  rounds: 2
+  roles: []
+knowledge:
+  db_path: D:\KB-base.db
+
+# ---- 6.5) 长期对话记忆：跨会话记住用户偏好/事实（区别于上面知识库的文档定位）----
+#   说「记住我是做跨境电商的 / 我喜欢简洁回答」等 → 自动沉淀；/memory 管理、/remember 显式写入。
+#   db_path : SQLite 库路径，相对路径基于项目根；改完重启生效。
+memory:
+  db_path: data/memory.db
+
+# ---- 6) 熔断：模型通道连续失败自动熔断（#5 熔断，护降级链路、防雪崩）----
+#   某角色（端点）连续失败 failure_threshold 次 → 自动熔断（OPEN），后续调用瞬间跳过它去试
+#   下一个角色，不再傻等重试退避；冷却 cooldown 秒后自动进入半开探测，成功则恢复。
+#   手动干预：forge 里 /circuit 看状态、/circuit reset <角色> 手动复位。
+circuit_breaker:
+  failure_threshold: 3   # 连续失败几次触发熔断
+  cooldown: 30            # 熔断后冷却秒数，到期自动半开探测
+  half_open_max: 1        # 半开状态放行几次探测（1 = 一次定生死）
+
+# ---- 7) 反思自纠错：答案生成后由评审角色打分，低分带意见重答（A07 组合拳末环）----
+#   enabled 打开时，每次回复多花 1 次评审调用（默认走便宜的降级角色）；低于 min_score 再花 1 次重答。
+#   默认关闭：想体验时 /config 或改这里 enabled: true。
+reflect:
+  enabled: false     # 开关（默认关）
+  min_score: 6       # 评审 0-10，低于此分触发修正
+  max_rounds: 1      # 最多修正几轮（每轮 = 评审 1 次 + 重答 1 次）
+  judge_role: fallback  # 评审角色（建议用便宜/快的降级角色）
+
+# ====================== 切回云端（DeepSeek）参考 ======================
+# 不想用本地端点时，把上面的 models / roles 换成下面这组即可（debate / router 不用动）：
+# models:
+#   deepseek:
+#     label: DeepSeek V4 Pro
+#     base_url: https://api.deepseek.com/v1
+#     api_key_env: DEEPSEEK_API_KEY
+#     model: deepseek-v4-pro
+#   deepseek_flash:
+#     label: DeepSeek V4 Flash
+#     base_url: https://api.deepseek.com/v1
+#     api_key_env: DEEPSEEK_API_KEY
+#     model: deepseek-v4-flash
+#   qwen:
+#     label: 通义千问 Plus
+#     base_url: https://dashscope.aliyuncs.com/compatible-mode/v1
+#     api_key_env: DASHSCOPE_API_KEY
+#     model: qwen-plus
+# roles:
+#   default:   { model: deepseek,       label: 主力,   purpose: 常规对话主力 }
+#   reasoning: { model: deepseek,       label: 推理,   purpose: 复杂推理 / 深思熟虑时 }
+#   chinese:   { model: qwen,           label: 中文文案, purpose: 中文写作 / 润色 }
+#   fallback:  { model: deepseek_flash, label: 降级,   purpose: 主力通道失败时的备用 }
