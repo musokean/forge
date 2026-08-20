@@ -61,7 +61,8 @@ jobs:
   collect:
     name: Diagnostic collect check
     runs-on: ubuntu-latest
-    if: failure()
+    needs: test
+    if: always() && contains(needs.test.result, 'failure')
     steps:
       - uses: actions/checkout@v4
 
