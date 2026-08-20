@@ -10,7 +10,7 @@ from .config import resolve_model
 
 _clients = {}  # 按 (base_url, api_key) 缓存客户端
 
-# 全局调用超时（老大 2026-08-20：路由判断卡死根因——端点不可达时 openai 默认超时 600s × 3 次重试）
+# 全局调用超时（2026-08-20：路由判断卡死根因——端点不可达时 openai 默认超时 600s × 3 次重试）
 # ⚠ 必须用 httpx.Timeout 对象，不能传 dict：openai SDK ≥2.x 的 timeout 参数只接受 float/Timeout，
 #   传 dict 会 TypeError（unsupported operand type(s) for +: 'float' and 'dict'）→ 被包装成 APIConnectionError
 _CLIENT_TIMEOUT = httpx.Timeout(
@@ -37,7 +37,7 @@ def _get_client(base_url: str, api_key: str):
         loop_id = 0
     key = (base_url, api_key, loop_id)
     if key not in _clients:
-        # 全局超时（老大 2026-08-20：端点不可达时默认 600s 超时+3 次重试=卡死路由判断）：
+        # 全局超时（2026-08-20：端点不可达时默认 600s 超时+3 次重试=卡死路由判断）：
         #   connect 8s 建立连接 · read 60s 等待响应 · write 30s · pool 30s
         _clients[key] = AsyncOpenAI(api_key=api_key, base_url=base_url, timeout=_CLIENT_TIMEOUT)
     return _clients[key]

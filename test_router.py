@@ -105,7 +105,7 @@ class TestModelFallback(unittest.TestCase):
 
 
 class TestRouteGreetingNoModel(unittest.TestCase):
-    """关键回归：问候语绝不调模型（老大反馈「你好也卡」）。"""
+    """关键回归：问候语绝不调模型（反馈「你好也卡」）。"""
 
     def test_greeting_skips_model(self):
         with patch("src.router._call_role") as mock_call:

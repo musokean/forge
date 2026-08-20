@@ -886,7 +886,7 @@ async def _handle_line(agent: Agent, cfg, line: str) -> None:
         line = mem_ctx + "\n\n用户问题：" + line
     from src.router import _rule_route, route
     from src.spinner import spinner_start, spinner_stop
-    # 规则预判命中：0ms 秒回，不显示 spinner（老大 2026-08-20：规则命中还闪「判断任务类型」很烦）
+    # 规则预判命中：0ms 秒回，不显示 spinner（2026-08-20：规则命中还闪「判断任务类型」很烦）
     decision = _rule_route(line)
     if decision is None:
         # 只有规则拿不准的才启动 spinner 走模型兜底
@@ -907,7 +907,7 @@ async def _handle_line(agent: Agent, cfg, line: str) -> None:
         from src.orchestrator import get_debate_roles
         dr, _ = get_debate_roles(cfg)
         if not dr:
-            # 辩论阵容未配置：提示并降级普通直答（老大 2026-08-20：辩论默认不配，有需要再配）
+            # 辩论阵容未配置：提示并降级普通直答（2026-08-20：辩论默认不配，有需要再配）
             print(paint("⚖️ 这是个决策问题。当前未配置辩论阵容，按普通问答回答；", C.SKY)
                   + paint("需要多角色辩论可 /config 按 d 一键配置", C.SKY_DIM))
             result = await agent.run(line)
@@ -928,7 +928,7 @@ async def _handle_line(agent: Agent, cfg, line: str) -> None:
         print(full_rule())
         return
     result = await agent.run(line)  # 流式打印思考+答案
-    # 流式路径答案已打印；但失败/中断等非流式返回需显式输出（老大 2026-08-20：失败被吞只看到分隔线）
+    # 流式路径答案已打印；但失败/中断等非流式返回需显式输出（2026-08-20：失败被吞只看到分隔线）
     if result and not result.endswith(("（已中断）", "（已连续打断，中止）")):
         # agent.run 流式时已打印内容（返回值和打印内容一致），这里只补打非流式/失败提示
         if result.startswith(("⚠", "达到最大步数", "（")):
@@ -968,7 +968,7 @@ async def _repl() -> None:
     cfg = load_config()
     print(_welcome())
     _check_keys(cfg)  # 启动缺 key 检测（模型管理流程优化）
-    # 启动自检：探测主力端点连通性（老大 2026-08-20：端点不可达时曾「卡住没回复」）
+    # 启动自检：探测主力端点连通性（2026-08-20：端点不可达时曾「卡住没回复」）
     try:
         ok, detail = await _probe_endpoint(cfg)
         print(paint(("  ✅ 主力端点 " if ok else "  ❌ 主力端点 ") + detail,
@@ -980,7 +980,7 @@ async def _repl() -> None:
     _auto_sync_kb()  # 启动时静默同步已登记的知识库目录
     sched = get_scheduler()
     sched.start()    # 自动任务调度器（#18）：后台线程周期执行登记的任务
-    # —— 介绍区（欢迎页/提示）与会话区用两行贯穿全宽的分隔线分开（老大 2026-08-20：一直到底）——
+    # —— 介绍区（欢迎页/提示）与会话区用两行贯穿全宽的分隔线分开（2026-08-20：一直到底）——
     print()
     print(full_rule())
     print(full_rule())

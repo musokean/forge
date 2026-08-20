@@ -22,7 +22,7 @@ from src.circuit import (
 # ===================== 0) 全局隔离 =====================
 class _Isolated(unittest.TestCase):
     """每个测试后复位熔断器注册表——防止污染后续测试文件
-    （老大 2026-08-20：CI 里 test_circuit_breaker 熔断角色 b 后，
+    （2026-08-20：CI 里 test_circuit_breaker 熔断角色 b 后，
      test_error_resilience 的降级测试全被「熔断中」拦截）。"""
 
     def tearDown(self):

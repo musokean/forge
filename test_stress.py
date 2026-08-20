@@ -52,7 +52,7 @@ async def loop_stress():
         print("  ⚠ 未设 key，跳过循环压测")
         return
     a = Agent()
-    for q in ["1+1 等于几（只答数字）", "刚才的答案是多少", "我叫老大，我叫什么"]:
+    for q in ["1+1 等于几（只答数字）", "刚才的答案是多少", "我叫小明，我叫什么"]:
         ans = await a.run(q)
         print(f"  问「{q}」→ 答：{ans[:60]}")
     assert a.total_tokens["prompt"] > 0, "token 统计应有值"

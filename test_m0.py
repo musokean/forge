@@ -14,9 +14,9 @@ async def main():
     r2 = await agent.run("帮我算一下 (3+5)*2 等于多少")
     print("回答：", r2)
 
-    print("\n=== 用例 3：多轮上下文（先说我叫老大，再问名字）===")
+    print("\n=== 用例 3：多轮上下文（先说我叫小明，再问名字）===")
     agent3 = Agent()
-    await agent3.run("我叫老大")
+    await agent3.run("我叫小明")
     r3 = await agent3.run("我叫什么？")
     print("回答：", r3)
 

@@ -103,7 +103,7 @@ class Agent:
         """用便宜模型压缩文本（A05b 杠杆②）。失败返回 None，绝不阻塞主流程。
 
         角色选择：优先 fallback（若有），否则用 default——默认配置精简后不一定有 fallback
-        （老大 2026-08-20 精简 roles 后 _fallback_role 返回 None 导致摘要静默失效）。
+        （2026-08-20： 精简 roles 后 _fallback_role 返回 None 导致摘要静默失效）。
         """
         if not text.strip():
             return ""
@@ -345,7 +345,7 @@ class Agent:
 
             # 流式接收：思考过程与答案边生成边打印（打字机效果）
             # 手动迭代（__anext__）而非 async for：等待首字阶段每 0.5s 轮询键盘，
-            # 让「连接端点/生成首个 token」期间也能 Esc 打断 / 任意键引导（老大 2026-08-20 反馈）
+            # 让「连接端点/生成首个 token」期间也能 Esc 打断 / 任意键引导（2026-08-20： 反馈）
             t0 = time.monotonic()
             spin = spinner_start("💭 思考中") if self.show_spinner else None
             stream = None

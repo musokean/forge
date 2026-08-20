@@ -73,9 +73,9 @@ class TestMemory(unittest.TestCase):
         self.m = MemoryStore(self.path)
 
     def test_remember_and_duplicate(self):
-        ok, _ = self.m.remember("老大做跨境电商，美容仪器方向")
+        ok, _ = self.m.remember("小明做跨境电商，美容仪器方向")
         self.assertTrue(ok)
-        ok2, msg2 = self.m.remember("老大做跨境电商，美容仪器方向")
+        ok2, msg2 = self.m.remember("小明做跨境电商，美容仪器方向")
         self.assertFalse(ok2)
         self.assertIn("去重", msg2)
         self.assertEqual(self.m.stats()["count"], 1)
@@ -87,7 +87,7 @@ class TestMemory(unittest.TestCase):
         self.assertIsNone(self.m.auto_remember("今天天气怎么样"))  # 不命中模式
 
     def test_recall_and_hit_count(self):
-        self.m.remember("老大负责 MYCHWAY 的产品知识库")
+        self.m.remember("小明负责 MYCHWAY 的产品知识库")
         hits = self.m.recall("知识库")
         self.assertEqual(len(hits), 1)
         hits2 = self.m.recall("知识库")
@@ -102,7 +102,7 @@ class TestMemory(unittest.TestCase):
         self.assertEqual(self.m.stats()["count"], 0)
 
     def test_compose_context(self):
-        self.m.remember("老大是做跨境电商的")
+        self.m.remember("小明是做跨境电商的")
         ctx = self.m.compose_context("跨境电商")
         self.assertIn("长期记忆", ctx)
         self.assertIn("跨境电商", ctx)
