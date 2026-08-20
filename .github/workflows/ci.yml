@@ -74,10 +74,24 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh issue create \
-            --title "CI debug: pytest log (py3.11, run ${{ github.run_number }})" \
-            --body "$(echo '```'; cat /tmp/pytest.log; echo '```')" \
-            --label "ci-debug" 2>&1 || echo "issue create failed (may already exist)"
+          python - <<'PYEOF'
+          import json, os
+          with open("/tmp/pytest.log", encoding="utf-8", errors="replace") as f:
+              log = f.read()[:16000]
+          body = f"## CI pytest log (py3.11, run {os.environ.get('GITHUB_RUN_NUMBER','?')})\n\n```\n{log}\n```"
+          import urllib.request
+          req = urllib.request.Request(
+              "https://api.github.com/repos/musokean/forge/issues",
+              data=json.dumps({"title": f"CI debug: pytest log (py3.11, run {os.environ.get('GITHUB_RUN_NUMBER','?')})", "body": body}).encode(),
+              headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json", "User-Agent": "forge-ci"},
+              method="POST")
+          try:
+              with urllib.request.urlopen(req, timeout=30) as r:
+                  d = json.loads(r.read().decode())
+                  print("issue created:", d.get("html_url") or d.get("number"))
+          except Exception as e:
+              print("issue create failed:", e)
+          PYEOF
 
       - name: Verify package imports cleanly
         run: python -c "import main; print('forge import OK')"
