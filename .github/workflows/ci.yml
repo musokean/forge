@@ -1,6 +1,6 @@
 name: CI
 
-on:
+"on":
   push:
     branches: [main, master]
   pull_request:
@@ -87,12 +87,21 @@ jobs:
           test -f README.en.md && echo "OK: README.en.md present"
 
   # ========== 真实模型冒烟（有 secrets 才跑；无 key 自动跳过） ==========
+  # 注意：secrets 不能用于 job 级 if（会导致整个 workflow 解析失败），
+  #       所以用「job 第一个 step 检查 env 里的 key，为空则退出 0」实现跳过。
   model-smoke:
     name: Model smoke (optional, needs API key)
     runs-on: ubuntu-latest
-    if: ${{ secrets.DEEPSEEK_API_KEY != '' }}
     needs: test
     steps:
+      - name: Skip if no API key configured
+        id: skip-check
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
+        run: |
+          if [ -z "$DEEPSEEK_API_KEY" ]; then echo "no key, skipping"; exit 0; fi
+          echo "key present, proceeding"
+
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
@@ -105,19 +114,25 @@ jobs:
           pip install -e . --no-cache-dir
 
       - name: Configure key from secret
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
+          if [ -z "$DEEPSEEK_API_KEY" ]; then echo "skipped (no key)"; exit 0; fi
           cp config/models.example.yaml config/models.yaml
           python - <<'EOF'
-          import re
+          import os, re
           p = "config/models.yaml"
           s = open(p, encoding="utf-8").read()
-          s = s.replace("api_key: sk-xxx", "api_key: " + "${{ secrets.DEEPSEEK_API_KEY }}", 1)
+          s = s.replace("api_key: sk-xxx", "api_key: " + os.environ["DEEPSEEK_API_KEY"], 1)
           open(p, "w", encoding="utf-8").write(s)
           print("key injected")
           EOF
 
       - name: "Smoke: one real call through the full stack"
+        env:
+          DEEPSEEK_API_KEY: ${{ secrets.DEEPSEEK_API_KEY }}
         run: |
+          if [ -z "$DEEPSEEK_API_KEY" ]; then echo "skipped (no key)"; exit 0; fi
           python -c "
           import asyncio;
           from src.agent import Agent;
