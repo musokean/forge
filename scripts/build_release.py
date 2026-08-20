@@ -31,8 +31,8 @@ COPY_GLOBS = [
     "README.md", "README.en.md", "LICENSE",
     ".github/**",
 ]
-# 明确排除（防误伤）：本地运行残留 + 打包工具自身
-EXCLUDE_DIRS = {"data", "exports", ".git", "__pycache__", ".workbuddy", "release", "scripts"}
+# 明确排除（防误伤）：本地运行残留（scripts/ 单独处理——只放行 build_release.py）
+EXCLUDE_DIRS = {"data", "exports", ".git", "__pycache__", ".workbuddy", "release"}
 EXCLUDE_EXTS = {".db", ".log", ".pyc", ".pyo"}
 EXCLUDE_NAMES = {"config/models.yaml"}  # 真实配置（含 key）不进发布物
 
@@ -51,13 +51,14 @@ def _desensitize(text: str) -> str:
 
 
 def _should_skip_rel(rel: str) -> bool:
-    parts = rel.split(os.sep)
+    rel = rel.replace("\\", "/")  # 统一正斜杠：Windows walk 产生反斜杠，Linux 正斜杠（平台一致性）
+    parts = rel.split("/")
     for p in parts:
         if p in EXCLUDE_DIRS or p.endswith(".egg-info"):
             return True
-    # scripts/ 目录：只保留 build_release.py（打包工具本身随仓库发布，供他人重新打包）
+    # scripts/ 目录：放行目录本身，但只复制 build_release.py（打包工具随仓库发布，供他人重新打包）
     if "scripts" in parts:
-        return not (rel.endswith("scripts/build_release.py"))
+        return not (rel == "scripts" or rel.endswith("scripts/build_release.py"))
     for p in parts:
         if p.startswith(".") and p != ".github":  # 隐藏文件/目录（.github 是 CI 配置，放行）
             return True

@@ -69,68 +69,8 @@ jobs:
           path: /tmp/pytest.log
           if-no-files-found: ignore
 
-      - name: Create diagnostic issue with pytest log
-        if: failure()
-        env:
-          PYVER: ${{ matrix.python-version }}
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: |
-          python - <<'PYEOF'
-          import json, os
-          with open("/tmp/pytest.log", encoding="utf-8", errors="replace") as f:
-              log = f.read()[:16000]
-          pyver = os.environ.get('PYVER', '?')
-          runnum = os.environ.get('GITHUB_RUN_NUMBER', '?')
-          body = f"## CI pytest log (py{pyver}, run {runnum})\n\n```\n{log}\n```"
-          import urllib.request
-          req = urllib.request.Request(
-              "https://api.github.com/repos/musokean/forge/issues",
-              data=json.dumps({"title": f"CI debug: pytest log (py{pyver}, run {runnum})", "body": body}).encode(),
-              headers={"Authorization": f"Bearer {os.environ['GH_TOKEN']}", "Accept": "application/vnd.github+json", "User-Agent": "forge-ci"},
-              method="POST")
-          try:
-              with urllib.request.urlopen(req, timeout=30) as r:
-                  d = json.loads(r.read().decode())
-                  print("issue created:", d.get("html_url") or d.get("number"))
-          except Exception as e:
-              print("issue create failed:", e)
-          PYEOF
-
       - name: Verify package imports cleanly
         run: python -c "import main; print('forge import OK')"
-
-  # ========== 诊断 job：收集阶段错误写入 step summary（run 页面可见） ==========
-  collect:
-    name: Diagnostic collect check
-    runs-on: ubuntu-latest
-    needs: test
-    if: always() && contains(needs.test.result, 'failure')
-    steps:
-      - uses: actions/checkout@v4
-
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.11"
-
-      - name: Install
-        run: |
-          pip install --upgrade pip
-          pip install -e . --no-cache-dir --no-build-isolation
-          pip install --no-cache-dir --no-build-isolation pytest
-
-      - name: Show collection errors into step summary
-        run: |
-          {
-            echo "## pytest collect errors";
-            echo '```';
-            python -m pytest --collect-only -q \
-              test_router.py test_interrupt.py test_eval.py test_web.py \
-              test_approval.py test_knowledge.py test_circuit_breaker.py \
-              test_skills_memory_reflect.py test_tasks.py test_error_resilience.py \
-              test_context_mgmt.py test_trace.py test_structured.py 2>&1 || true;
-            echo '```';
-          } >> "$GITHUB_STEP_SUMMARY"
-        continue-on-error: true
 
   # ========== 打包验证：build_release.py 产出干净副本 ==========
   build:
@@ -152,7 +92,8 @@ jobs:
           cd /tmp/forge-release
           test ! -d data && echo "OK: no data/"
           test ! -d exports && echo "OK: no exports/"
-          test ! -d scripts && echo "OK: no scripts/"
+          test ! -d scripts && echo "FAIL: scripts/ missing (build_release.py should ship)" && exit 1
+          ls scripts/ | grep -v "^build_release.py$" && echo "FAIL: unexpected file in scripts/" && exit 1 || echo "OK: scripts/ only has build_release.py"
           if grep -rqE "sk-[A-Za-z0-9]{20,}" --include="*.py" --include="*.yaml" --include="*.md" .; then
             echo "FAIL: leaked API key found"; exit 1
           else
