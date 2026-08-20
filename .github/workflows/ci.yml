@@ -57,6 +57,38 @@ jobs:
       - name: Verify package imports cleanly
         run: python -c "import main; print('forge import OK')"
 
+  # ========== 诊断 job：收集阶段错误写入 step summary（run 页面可见） ==========
+  collect:
+    name: Diagnostic collect check
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install
+        run: |
+          pip install --upgrade pip
+          pip install -e . --no-cache-dir --no-build-isolation
+          pip install --no-cache-dir --no-build-isolation pytest
+
+      - name: Show collection errors into step summary
+        run: |
+          {
+            echo "## pytest collect errors";
+            echo '```';
+            python -m pytest --collect-only -q \
+              test_router.py test_interrupt.py test_eval.py test_web.py \
+              test_approval.py test_knowledge.py test_circuit_breaker.py \
+              test_skills_memory_reflect.py test_tasks.py test_error_resilience.py \
+              test_context_mgmt.py test_trace.py test_structured.py 2>&1 || true;
+            echo '```';
+          } >> "$GITHUB_STEP_SUMMARY"
+        continue-on-error: true
+
   # ========== 打包验证：build_release.py 产出干净副本 ==========
   build:
     name: Release-copy build check
