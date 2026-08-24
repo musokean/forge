@@ -100,7 +100,9 @@ jobs:
             echo "OK: no API key leaks"
           fi
           test -f .gitignore && echo "OK: .gitignore present"
-          test -f README.en.md && echo "OK: README.en.md present"
+          test -f README.md && echo "OK: README.md (English default) present"
+          test -f README.zh-CN.md && echo "OK: README.zh-CN.md present"
+          test ! -f README.en.md && echo "OK: README.en.md removed (replaced by zh-CN)"
 
   # ========== 真实模型冒烟（有 secrets 才跑；无 key 自动跳过） ==========
   # 注意：secrets 不能用于 job 级 if（会导致整个 workflow 解析失败），
