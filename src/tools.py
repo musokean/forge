@@ -372,3 +372,67 @@ def kb_ingest(path: str) -> str:
 def kb_add(title: str, content: str) -> str:
     ok, msg = _get_kb().add(title, content)
     return json.dumps({"ok": ok, "msg": msg}, ensure_ascii=False)
+
+
+# ============ 硬件设备工具（Phase 0 模拟器，对齐 A24 硬件即工具） ============
+# fake_device.py 模拟美容仪；只读操作零风险，写操作走审批层（read_only=False）。
+# 单例懒加载：核心功能不 import fake_device，不装/缺文件不影响 forge 主流程。
+
+_device = None
+
+
+def _get_device():
+    """懒加载设备单例（延迟 import，失败返回 None 不崩主流程）。"""
+    global _device
+    if _device is None:
+        try:
+            from fake_device import BeautyDevice
+            _device = BeautyDevice()
+        except Exception:
+            _device = False  # 标记不可用，避免每次重试
+    return _device if _device else None
+
+
+@tool(
+    name="device_status",
+    description="读取美容仪当前状态（只读：电源/档位/温度/电流/运行时长/过热保护）。需要了解设备状态、异常分析时用",
+    parameters={"type": "object", "properties": {}},
+    read_only=True,
+)
+def device_status() -> str:
+    dev = _get_device()
+    if dev is None:
+        return json.dumps({"ok": False, "reason": "设备不可用（未找到 fake_device 模块）"}, ensure_ascii=False)
+    return json.dumps(dev.status(), ensure_ascii=False)
+
+
+@tool(
+    name="device_power",
+    description="控制美容仪电源开关（写操作）：on 开机（自动 1 档）、off 关机。开机后设备会发热",
+    parameters={"type": "object", "properties": {"action": {"type": "string", "enum": ["on", "off"]}}, "required": ["action"]},
+    read_only=False,
+)
+def device_power(action: str) -> str:
+    dev = _get_device()
+    if dev is None:
+        return json.dumps({"ok": False, "reason": "设备不可用"}, ensure_ascii=False)
+    if action == "on":
+        result = dev.power_on()
+    elif action == "off":
+        result = dev.power_off()
+    else:
+        result = {"ok": False, "reason": f"action 只能是 on/off，收到 {action!r}"}
+    return json.dumps(result, ensure_ascii=False)
+
+
+@tool(
+    name="device_level",
+    description="调整美容仪强度档位（写操作）：1/2/3 档。需先开机",
+    parameters={"type": "object", "properties": {"level": {"type": "integer", "minimum": 1, "maximum": 3}}, "required": ["level"]},
+    read_only=False,
+)
+def device_level(level: int) -> str:
+    dev = _get_device()
+    if dev is None:
+        return json.dumps({"ok": False, "reason": "设备不可用"}, ensure_ascii=False)
+    return json.dumps(dev.set_level(level), ensure_ascii=False)
