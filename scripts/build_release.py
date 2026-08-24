@@ -34,7 +34,7 @@ COPY_GLOBS = [
 # 明确排除（防误伤）：本地运行残留（scripts/ 单独处理——只放行 build_release.py）
 EXCLUDE_DIRS = {"data", "exports", ".git", "__pycache__", ".workbuddy", "release"}
 EXCLUDE_EXTS = {".db", ".log", ".pyc", ".pyo"}
-EXCLUDE_NAMES = {"config/models.yaml"}  # 真实配置（含 key）不进发布物
+EXCLUDE_NAMES = {"README.en.md"}  # README.en.md 已被 README.zh-CN.md 取代（config/models.yaml 由 _write_example_config 脱敏生成，属设计）
 
 # 敏感 key 正则：sk- 开头或 api_key 字段里的密钥串
 KEY_PATTERNS = [
@@ -53,6 +53,8 @@ def _desensitize(text: str) -> str:
 def _should_skip_rel(rel: str) -> bool:
     rel = rel.replace("\\", "/")  # 统一正斜杠：Windows walk 产生反斜杠，Linux 正斜杠（平台一致性）
     parts = rel.split("/")
+    if any(name in parts for name in EXCLUDE_NAMES):
+        return True  # 路径任意段命中即排除（README.en.md 已被 README.zh-CN.md 取代）
     for p in parts:
         if p in EXCLUDE_DIRS or p.endswith(".egg-info"):
             return True
