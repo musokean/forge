@@ -24,13 +24,18 @@ Most agent projects fall into two camps:
 ## Quick start
 
 ```bash
-pip install -e .          # one-time install, registers the `forge` command
+# install from GitHub (or clone the repo and run: pip install -e .)
+pip install "git+https://github.com/musokean/forge.git"
+
+# set your API key (env var, picked up automatically)
+export DEEPSEEK_API_KEY=sk-xxx
+
 forge                     # interactive REPL
 forge "帮我算 (3+5)*2"      # one-shot question
 forge --web               # browser chat UI (zero-dependency HTTP server)
 ```
 
-Configure models in `config/models.yaml` (model registry → roles → debate lineup → routing → knowledge base path). No code changes needed to switch models or add roles.
+First run auto-generates a default `config/models.yaml` (if missing) — no config file, no crash. Edit it (or `/config` in the REPL) to switch models / roles / endpoints. Model registry → roles → debate lineup → routing → knowledge base path, all config-driven, no code changes.
 
 ## Feature highlights
 

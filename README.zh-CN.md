@@ -13,17 +13,26 @@
 ## 一、快速开始
 
 ```bash
-# 1. 安装（项目目录下执行一次，装成系统命令）
-pip install -e .
+# 1. 安装（二选一）
+#    ① 直接从 GitHub 装（无需 clone）
+pip install "git+https://github.com/musokean/forge.git"
+#    ② 或 clone 后本地安装
+#    git clone https://github.com/musokean/forge.git && cd forge && pip install -e .
 
-# 2. 启动交互式对话
+# 2. 设置 API key（环境变量，自动读取）
+export DEEPSEEK_API_KEY=sk-xxx
+
+# 3. 启动交互式对话
 forge
 
-# 3. 单次问答（不进入交互模式）
+# 4. 单次问答（不进入交互模式）
 forge "帮我算 (3+5)*2"
 
-# 4. Web 网页界面（浏览器聊天，零依赖 HTTP 服务）
+# 5. Web 网页界面（浏览器聊天，零依赖 HTTP 服务）
 forge --web                  # 默认端口 8000，自动开浏览器
+```
+
+> **首次运行**：找不到配置文件时自动生成默认 `config/models.yaml`（不崩、不报错），填 key 或设环境变量即可用。模型/角色/辩论阵容/知识库路径全在 `config/models.yaml` 里改，保存即生效，不动代码。
 forge --web --port 8080      # 指定端口
 ```
 
