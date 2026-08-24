@@ -1079,8 +1079,15 @@ async def _repl() -> None:
 def main() -> None:
     # 启动参数：
     #   forge --web [--port 8000]   起 Web 聊天界面（零依赖 HTTP 服务，浏览器访问）
+    #   forge --voice               语音对话模式（STT → Agent → TTS，需装语音依赖）
     #   forge "问题"                 单次问答
     #   forge                       交互式对话
+    if len(sys.argv) > 1 and sys.argv[1] == "--voice":
+        agent = Agent(stream=False, show_spinner=False)
+        from src.voice import run_voice
+
+        run_voice(agent)
+        return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000
         if "--port" in sys.argv:
