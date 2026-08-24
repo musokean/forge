@@ -1,5 +1,9 @@
 # forge · 把想法锻造成现实
 
+[![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
+[![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
+
 > **English**: [README.md](README.md)
 
 把 M0→M3 里程碑落成代码——ReAct 核心循环 + 工程底盘（工具只读分级 / 上下文截断+滚动摘要 / 错误重试+降级 / token 统计 / 每步 trace / 写操作审批）+ 多智能体编排（并行拆解 / 讨论式辩论 / 多模型路由 / 自动路由 / 流式输出）+ 结构化输出 + 本地知识库（SQLite+FTS5）+ 黄金集评估 + Web 界面 + Markdown 导出。**模型配置驱动、零外部重依赖**。
