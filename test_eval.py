@@ -192,7 +192,13 @@ class TestRunAllAndReport(unittest.TestCase):
             EvalResult(task="B", answer="bad answer here", keywords=["x"], hits=[False], min_score=6,
                        judge_score=3, passed=False, ms=200),
         ]
-        path = self.ev.export_markdown(results, name="test-eval.md")
+        # 导出到临时目录：本仓库常驻 Obsidian vault 内，测试产物写成 .md 会污染知识库
+        # （2026-09-28 实锤：exports/eval/test-eval.md 导致 vault 笔记数基线漂移 +1）
+        import shutil
+        import src.eval as eval_mod
+        td = tempfile.mkdtemp(prefix="forge-eval-")
+        with patch.object(eval_mod, "EVAL_EXPORT_DIR", td):
+            path = self.ev.export_markdown(results, name="test-eval.md")
         self.assertTrue(os.path.exists(path))
         with open(path, "r", encoding="utf-8") as f:
             content = f.read()
@@ -200,6 +206,7 @@ class TestRunAllAndReport(unittest.TestCase):
         self.assertIn("A", content)
         self.assertIn("未通过详情", content)
         self.assertIn("bad answer here", content)
+        shutil.rmtree(td, ignore_errors=True)
 
 
 if __name__ == "__main__":
