@@ -83,7 +83,16 @@ class EdgeTTS(TTSEngine):
             communicate = edge_tts.Communicate(text, self._voice, rate=self._rate, volume=self._volume)
             await communicate.save(out_path)
 
-        asyncio.run(_run())
+        # 不能嵌套 asyncio.run，用线程池执行
+        try:
+            loop = asyncio.get_running_loop()
+            # 已经在 running loop 里，用线程池调度
+            import concurrent.futures
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                pool.submit(asyncio.run, _run()).result()
+        except RuntimeError:
+            # 没有 running loop，安全使用 asyncio.run
+            asyncio.run(_run())
         return out_path
 
 

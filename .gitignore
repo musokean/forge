@@ -10,3 +10,6 @@ __pycache__/
 release/
 .workbuddy/
 push_github.cmd
+
+# 本地打包/安装产物
+*.egg-info/
