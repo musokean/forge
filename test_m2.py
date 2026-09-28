@@ -67,6 +67,13 @@ async def _run_all():
     await test_debate()
 
 
+
+
+# async + 需要真实模型/网络：pytest 不收集（否则报「async def 不被原生支持」误判失败）；
+# 需要时直接跑 `python test_m2.py`（__main__ 里 asyncio.run 仍会执行）。
+test_parallel.__test__ = False
+test_debate.__test__ = False
+
 if __name__ == "__main__":
     print("【1】多模型路由")
     test_multi_model()

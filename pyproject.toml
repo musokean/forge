@@ -13,6 +13,13 @@ dependencies = [
     "httpx>=0.24",  # src/llm.py 直接 import httpx（openai 的间接依赖不可靠，必须显式声明）
 ]
 
+[project.optional-dependencies]
+# #14 服务化才需要（forge --serve）：核心仍是零重依赖，不装也不影响 CLI/Web
+server = [
+    "fastapi>=0.110",
+    "uvicorn>=0.27",
+]
+
 [project.scripts]
 forge = "main:main"
 

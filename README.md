@@ -33,6 +33,7 @@ export DEEPSEEK_API_KEY=sk-xxx
 forge                     # interactive REPL
 forge "帮我算 (3+5)*2"      # one-shot question
 forge --web               # browser chat UI (zero-dependency HTTP server)
+forge --serve --port 8080 # HTTP API service (pip install "handcraft-agent[server]" first)
 ```
 
 First run auto-generates a default `config/models.yaml` (if missing) — no config file, no crash. Edit it (or `/config` in the REPL) to switch models / roles / endpoints. Model registry → roles → debate lineup → routing → knowledge base path, all config-driven, no code changes.
@@ -49,12 +50,13 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **Memory** | Cross-session user profile auto-recalled per query |
 | **Reliability** | Golden-set regression (`/eval`, keyword-hit + LLM-as-judge), model-failure resilience, endpoint self-check on startup |
 | **UX** | Sky-blue theme, interrupt/redirect generation (Esc / type a steer), auto tasks, Web UI |
+| **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
 
 ## Commands
 
 ```
 /reset /usage /trace /kb /export /key /model /config /circuit
-/skill /memory /remember /task /eval /web /help /exit
+/skill /memory /remember /task /eval /web /serve /help /exit
 ```
 
 `/key sk-xxx` — paste a key, auto-assigns to the main model. `/config` — guided panel, no YAML hand-editing needed.
@@ -75,10 +77,41 @@ handcraft-agent/
 │   ├── memory.py         # cross-session user profile
 │   ├── eval.py           # golden-set evaluation
 │   ├── web.py            # zero-dependency web chat
+│   ├── server.py         # #14 HTTP API service (sessions + auth + rate limit)
 │   ├── keypress.py       # interrupt/steer during generation
 │   └── ...
 ├── main.py               # CLI entry
 └── test_*.py             # milestone + stress + module tests (all mock, no network)
+```
+
+## Server mode (HTTP API)
+
+Turn forge into an HTTP service with **sessions, auth and rate limiting** (module #14):
+
+```bash
+pip install "handcraft-agent[server]"     # optional extra: fastapi + uvicorn
+forge --serve --port 8080                 # or "/serve 8080" inside the REPL
+```
+
+- **Sessions** — every conversation is persisted in SQLite (`data/sessions.db`), each with its own Agent context: clients can disconnect and resume later, or keep several threads apart.
+- **Auth** — `Authorization: Bearer <key>` or `X-API-Key: <key>`. Keys come from `server.api_keys` in `config/models.yaml`, or the `FORGE_API_KEY` env var (comma-separated, `env:VAR` indirection supported). **No keys configured → loopback-only** (convenient locally; never expose that to the internet).
+- **Rate limit** — `server.rate_limit_per_min` (default 60) per caller; beyond it you get `429` + `Retry-After`.
+- **Write safety** — a service has no interactive approval channel, so write tools are rejected by default; keep those in the CLI. Override with `server.approve_mode` only for controlled deployments.
+- Interactive docs: `http://127.0.0.1:8080/docs`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/healthz` | liveness probe (no auth) |
+| GET | `/api/status` | model, session count, auth mode, rate limit |
+| POST | `/api/chat` | `{"message": "...", "session_id": "optional"}` → reply + token usage |
+| POST | `/api/sessions` | create a session (`{"title": "optional"}`) |
+| GET | `/api/sessions` | list sessions |
+| GET | `/api/sessions/{id}` | session + full message history |
+| DELETE | `/api/sessions/{id}` | delete a session |
+
+```bash
+curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{"message": "hello"}' http://127.0.0.1:8080/api/chat
 ```
 
 ## Tests
@@ -88,6 +121,7 @@ python test_router.py     # task routing (rule-first + model fallback)
 python test_interrupt.py  # interrupt / steer during generation
 python test_eval.py       # golden-set evaluation
 python test_web.py        # web server end-to-end
+python test_server.py     # HTTP API service (auth / sessions / rate limit)
 python test_knowledge.py  # knowledge base
 # ... plus stress tests: test_stress*.py
 ```

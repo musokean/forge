@@ -76,6 +76,12 @@ async def test_token_usage():
     print(f"✅ token 统计：{a.usage_report()}")
 
 
+
+
+# async + 需要真实模型/网络：pytest 不收集（否则报「async def 不被原生支持」误判失败）；
+# 需要时直接跑 `python test_m1.py`（__main__ 里 asyncio.run 仍会执行）。
+test_token_usage.__test__ = False
+
 if __name__ == "__main__":
     test_readonly()
     test_trim_context()

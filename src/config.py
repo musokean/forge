@@ -42,6 +42,14 @@ reflect:
   min_score: 6
   max_rounds: 1
   judge_role: fallback
+# 服务化（#14）：forge --serve 起 HTTP API，需 pip install "handcraft-agent[server]"
+# api_keys 留空 = 只允许本机访问；对外服务务必填 key（或用环境变量 FORGE_API_KEY）
+server:
+  host: 127.0.0.1
+  port: 8080
+  api_keys: []
+  rate_limit_per_min: 60
+  approve_mode: auto_reject
 """
 
 

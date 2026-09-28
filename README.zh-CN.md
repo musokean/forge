@@ -6,7 +6,7 @@
 
 > **English**: [README.md](README.md)
 
-把 M0→M3 里程碑落成代码——ReAct 核心循环 + 工程底盘（工具只读分级 / 上下文截断+滚动摘要 / 错误重试+降级 / token 统计 / 每步 trace / 写操作审批）+ 多智能体编排（并行拆解 / 讨论式辩论 / 多模型路由 / 自动路由 / 流式输出）+ 结构化输出 + 本地知识库（SQLite+FTS5）+ 黄金集评估 + Web 界面 + Markdown 导出。**模型配置驱动、零外部重依赖**。
+把 M0→M3 里程碑落成代码——ReAct 核心循环 + 工程底盘（工具只读分级 / 上下文截断+滚动摘要 / 错误重试+降级 / token 统计 / 每步 trace / 写操作审批）+ 多智能体编排（并行拆解 / 讨论式辩论 / 多模型路由 / 自动路由 / 流式输出）+ 结构化输出 + 本地知识库（SQLite+FTS5）+ 黄金集评估 + Web 界面 + HTTP API 服务（多会话 + 鉴权 + 限流）+ Markdown 导出。**模型配置驱动、零外部重依赖**。
 
 ---
 
@@ -30,11 +30,14 @@ forge "帮我算 (3+5)*2"
 
 # 5. Web 网页界面（浏览器聊天，零依赖 HTTP 服务）
 forge --web                  # 默认端口 8000，自动开浏览器
+forge --web --port 8080      # 指定端口
+
+# 6. HTTP API 服务（#14 部署：多会话 + 鉴权 + 限流）
+#    先装可选依赖：pip install "handcraft-agent[server]"
+forge --serve --port 8080    # 接口文档 http://127.0.0.1:8080/docs
 ```
 
 > **首次运行**：找不到配置文件时自动生成默认 `config/models.yaml`（不崩、不报错），填 key 或设环境变量即可用。模型/角色/辩论阵容/知识库路径全在 `config/models.yaml` 里改，保存即生效，不动代码。
-forge --web --port 8080      # 指定端口
-```
 
 交互式对话里**直接说即可**，forge 自动判断任务类型：简单问题直接答、多任务自动并行拆解、决策类问题自动多角色辩论，不用手动指定。
 
@@ -63,6 +66,7 @@ forge --web --port 8080      # 指定端口
 | `/task` | 自动任务（定时/周期执行）：`/task` 列表 · `add 名 调度 [--kb] 提示词` · `del 名` · `run 名` · `on/off 名` · `log [名]` · `clear` |
 | `/eval` | 黄金集回归（防变笨）：`/eval` 全量 · `list` 列出 · `add 任务|关键词|分` 新增 · `<序号>` 单例 · `export` 导出报告 |
 | `/web` | Web 网页界面：`/web` 拉起（浏览器访问）· `/web stop` 停止 |
+| `/serve` | API 服务（#14 部署）：`/serve` · `/serve 端口` 起 HTTP API（多会话 + 鉴权 + 限流）· `/serve stop` 停止 |
 | `/help` | 查看帮助 |
 | `/exit` | 退出（或直接输 `exit` / `quit`） |
 
@@ -190,6 +194,21 @@ reflect:
 
 ---
 
+### ⑨ server —— 服务化（#14 部署）
+
+```yaml
+server:
+  host: 127.0.0.1          # 对外服务改 0.0.0.0（改之前先配好 api_keys！）
+  port: 8080
+  api_keys: []             # 例：["sk-forge-abc", "env:FORGE_KEY_2"]；留空 = 仅本机可访问
+  rate_limit_per_min: 60   # 每调用方每分钟次数（0 = 关闭限流）
+  approve_mode: auto_reject  # 服务端无交互审批 → 默认拒绝写操作
+  db_path: data/sessions.db
+```
+需要可选依赖 `pip install "handcraft-agent[server]"`（核心仍零重依赖）；启动 `forge --serve`，接口文档 `/docs`。
+
+---
+
 ## 五、知识库（索引库即源文档）
 
 forge 的知识库是**自持的**：知识直接沉淀进库内条目（SQLite + FTS5 全文检索），**不依赖外部源文件**。新用户零配置开箱即用——对话里说「记住这个 / 记到知识库」，forge 自动调 `kb_add` 写入；外部文件导入（ingest/sync）只是可选的补充通道。
@@ -252,6 +271,7 @@ handcraft-agent/
 │   ├── tasks.py          # 自动任务调度器（进程内调度，SQLite 持久化）
 │   ├── eval.py           # #13 黄金集评估（关键词命中 + LLM-as-judge + 报告导出）
 │   ├── web.py            # #12 Web 界面（零依赖 http.server + 内嵌聊天页）
+│   ├── server.py         # #14 API 服务（FastAPI：多会话 + 鉴权 + 限流 + 访问日志）
 │   ├── keypress.py       # 生成期键盘轮询（Esc 中断 / 引导输入，跨平台）
 │   ├── spinner.py        # 等待动画（旋转指示器，首字到达即停）
 │   └── console.py        # 终端样式（ANSI + 中文对齐，零依赖）
@@ -351,7 +371,42 @@ forge --web --port 8080         # 指定端口
 
 ---
 
-## 十二、测试与压测
+## 十二、API 服务（#14 部署：FastAPI + 多会话 + 鉴权）
+
+把 forge 变成可被程序调用的 HTTP 服务（配合 `/api/chat` 即一个「自带知识库 + 记忆 + 多模型路由」的对话后端）：
+
+```bash
+pip install "handcraft-agent[server]"     # 可选依赖：fastapi + uvicorn
+forge --serve --port 8080                 # 或交互模式里：/serve 8080 · /serve stop
+```
+
+| 方法 | 路径 | 作用 |
+|------|------|------|
+| GET | `/healthz` | 探活（**无鉴权**，供容器/负载均衡健康检查） |
+| GET | `/api/status` | 模型 / 会话数 / 鉴权模式 / 限流配置 |
+| POST | `/api/chat` | `{"message": "...", "session_id": "可选"}` → 回复 + token 用量 |
+| POST | `/api/sessions` | 新建会话（`{"title": "可选"}`） |
+| GET | `/api/sessions` | 会话列表（含轮数、最后活跃时间） |
+| GET | `/api/sessions/{id}` | 会话详情 + 完整消息历史 |
+| DELETE | `/api/sessions/{id}` | 删除会话 |
+
+**四条设计取舍（对齐 A12 部署与服务化）**：
+
+- **会话持久化**：会话与消息存 `data/sessions.db`，每个会话独立 Agent 上下文——客户端断开后能接着聊，服务重启（同库）也恢复历史。`#12` 的 Web 是单会话，服务化必须多会话。
+- **鉴权默认安全**：key 来自 `server.api_keys` 或环境变量 `FORGE_API_KEY`（支持 `env:变量名` 间接引用，key 不落配置文件）；**一个 key 都不配时自动退化为「仅本机 127.0.0.1 可访问」**——本地开发零配置，对外服务必须配 key，避免裸奔的 Agent。
+- **限流**：按调用方（有 key 用 key 指纹，无 key 用来源 IP）滑动窗口 `rate_limit_per_min`，超限 `429` + `Retry-After`。
+- **写操作默认拒绝**：服务端没有交互审批通道 → 写工具一律拒绝并把原因回报给调用方（与 #12 Web 一致）；只读能力（检索/计算/读文件/联网）全可用。受控部署可用 `server.approve_mode` 调整。
+
+接口文档：`http://127.0.0.1:8080/docs`（FastAPI 自动生成的 Swagger UI）。调用示例：
+
+```bash
+curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
+     -d '{"message": "你好"}' http://127.0.0.1:8080/api/chat
+```
+
+---
+
+## 十三、测试与压测
 
 ```bash
 python test_m0.py                    # M0 最小循环验收
@@ -371,6 +426,7 @@ python test_error_resilience.py      # 模型调用失败兜底（402 等不崩 
 python test_circuit_breaker.py       # #5 熔断：三态机 + chat/stream_chat 集成 + CLI
 python test_eval.py                  # #13 评估：黄金集加载/判定/报告（全 mock）
 python test_web.py                   # #12 Web：HTTP 服务端到端（起真实服务 + mock Agent）
+python test_server.py                # #14 API 服务：鉴权/限流/会话持久化/端点（全 mock）
 python test_interrupt.py             # 生成期打断/引导：poll_key 跨平台 + 流式中断重生成
 ```
 
@@ -378,7 +434,7 @@ python test_interrupt.py             # 生成期打断/引导：poll_key 跨平�
 
 ---
 
-## 十三、设计脉络（模块 → 原理）
+## 十四、设计脉络（模块 → 原理）
 
 每个模块对应一套可讲清的 Agent 原理，方便按图索骥：
 

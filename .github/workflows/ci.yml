@@ -33,7 +33,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -e . --no-cache-dir
+          pip install -e ".[server]" --no-cache-dir   # server extra: 让 #14 服务化测试真跑（否则 skip）
           pip install --no-cache-dir --no-build-isolation pytest
 
       - name: Copy example config (no real keys needed, but keep import path valid)
@@ -47,6 +47,7 @@ jobs:
             test_interrupt.py \
             test_eval.py \
             test_web.py \
+            test_server.py \
             test_approval.py \
             test_knowledge.py \
             test_circuit_breaker.py \

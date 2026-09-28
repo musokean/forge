@@ -140,6 +140,11 @@ def _help_text() -> str:
         "/web    Web 网页界面：#12 的浏览器入口\n"
         "         /web                         拉起 Web 聊天界面（浏览器访问，/web stop 停止）\n"
         "         或在启动时直接：forge --web [--port 8000]\n"
+        "/serve  API 服务（#14 部署：FastAPI 多会话 + 鉴权 + 限流）：\n"
+        "         /serve                        起 HTTP API（默认 127.0.0.1:8080，/serve stop 停止）\n"
+        "         /serve <端口>                 指定端口启动\n"
+        "         或在启动时直接：forge --serve [--host 127.0.0.1] [--port 8080]\n"
+        "         （需装可选依赖：pip install \"handcraft-agent[server]\"；接口文档见 <地址>/docs）\n"
         "/exit   退出（或直接输 exit / quit）\n",
         "",
         "■ 生成中",
@@ -963,6 +968,52 @@ def _web_command(arg: str) -> None:
 _WEB_INSTANCE = None
 
 
+def _serve_command(arg: str) -> None:
+    """API 服务管理：#14 部署的 REPL 入口。
+    /serve         起 HTTP API（FastAPI：多会话 + 鉴权 + 限流）
+    /serve <端口>  指定端口启动
+    /serve stop    停止 API 服务
+    """
+    global _SERVE_INSTANCE
+    arg = arg.strip()
+    if arg == "stop":
+        if _SERVE_INSTANCE:
+            _SERVE_INSTANCE[0].should_exit = True
+            _SERVE_INSTANCE = None
+            print(paint("  🛰 API 服务已停止", C.SKY_DIM))
+        else:
+            print(paint("  API 服务未在运行", C.SKY_DIM))
+        return
+    if _SERVE_INSTANCE:
+        print(paint(f"  API 服务已在运行：{_SERVE_INSTANCE[1]}", C.SKY_DIM))
+        return
+    port = None
+    if arg:
+        try:
+            port = int(arg)
+        except ValueError:
+            print(paint("  ⚠ 端口要是个数字，例如 /serve 8080", C.SKY))
+            return
+    try:
+        from src.config import load_config
+        from src.server import resolve_api_keys, start_background
+
+        server, url = start_background(port=port)
+    except RuntimeError as e:          # 未装可选依赖 / 端口被占用
+        print(paint(f"  ❌ {e}", C.RED))
+        return
+    keys = resolve_api_keys(load_config())
+    _SERVE_INSTANCE = (server, url)
+    print(paint(f"  🛰 forge API 已启动：{url}  （接口文档 {url}docs）", C.LIGHT_BLUE + C.BOLD))
+    auth = f"API key（{len(keys)} 个）" if keys else "未配 key → 仅本机可访问"
+    print(paint(f"  🔐 鉴权：{auth}；/serve stop 停止", C.DIM))
+
+
+# 全局 API 服务实例（/serve 命令管理）：(uvicorn.Server, url)
+_SERVE_INSTANCE = None
+
+
+
 async def _repl() -> None:
     agent = Agent()  # 复用同一个实例，保留多轮上下文
     cfg = load_config()
@@ -1066,6 +1117,8 @@ async def _repl() -> None:
             continue
         if line == "/web" or line.startswith("/web "):
             _web_command(line[4:].strip())
+        if line == "/serve" or line.startswith("/serve "):
+            _serve_command(line[6:].strip())
             continue
         # 自动路由：AI 自己判断任务类型（单答 / 并行 / 辩论）
         try:
@@ -1080,6 +1133,7 @@ def main() -> None:
     # 启动参数：
     #   forge --web [--port 8000]   起 Web 聊天界面（零依赖 HTTP 服务，浏览器访问）
     #   forge --voice               语音对话模式（STT → Agent → TTS，需装语音依赖）
+    #   forge --serve [--port 8080] HTTP API 服务（FastAPI 多会话 + 鉴权，需 server 可选依赖）
     #   forge "问题"                 单次问答
     #   forge                       交互式对话
     if len(sys.argv) > 1 and sys.argv[1] == "--voice":
@@ -1102,6 +1156,27 @@ def main() -> None:
                 time.sleep(1)
         except KeyboardInterrupt:
             web.stop()
+        return
+    if len(sys.argv) > 1 and sys.argv[1] == "--serve":
+        # forge --serve [--host 0.0.0.0] [--port 8080]：起 HTTP API 服务（需 server 可选依赖）
+        host = None
+        port = None
+        if "--host" in sys.argv:
+            try:
+                host = sys.argv[sys.argv.index("--host") + 1]
+            except IndexError:
+                pass
+        if "--port" in sys.argv:
+            try:
+                port = int(sys.argv[sys.argv.index("--port") + 1])
+            except (ValueError, IndexError):
+                pass
+        try:
+            from src.server import serve
+
+            serve(host=host, port=port)
+        except RuntimeError as e:      # 未装可选依赖
+            print(paint(f"  ❌ {e}", C.RED))
         return
     if len(sys.argv) > 1:
         task = " ".join(sys.argv[1:])

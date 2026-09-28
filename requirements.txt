@@ -1,3 +1,4 @@
 openai
 pyyaml
 httpx  # src/llm.py 直接 import httpx，必须显式声明
+# 服务化（#14 forge --serve）才需要：pip install "handcraft-agent[server]"（fastapi + uvicorn）

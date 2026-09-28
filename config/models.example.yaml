@@ -139,6 +139,21 @@ reflect:
   max_rounds: 1      # 最多修正几轮（每轮 = 评审 1 次 + 重答 1 次）
   judge_role: fallback  # 评审角色（建议用便宜/快的降级角色）
 
+# ---- 8) 服务化（#14 部署）：`forge --serve` 起 HTTP API（FastAPI + 多会话 + 鉴权）----
+#   需要可选依赖：pip install "handcraft-agent[server]"
+#   · 会话：SQLite 持久化（db_path），每会话独立上下文——断了能续聊、换客户端接着聊
+#   · 鉴权：api_keys 填 key（或用环境变量 FORGE_API_KEY，逗号分隔多个）
+#           **不填 = 只允许本机 127.0.0.1 访问**；对外服务务必填 key
+#   · 限流：rate_limit_per_min 次/分/调用方（0 = 关闭）
+#   · 写操作：服务端没有交互审批通道 → 默认拒绝（approve_mode: auto_reject），只读能力全可用
+server:
+  host: 127.0.0.1          # 对外服务改 0.0.0.0（改之前先配好 api_keys！）
+  port: 8080
+  api_keys: []             # 例：["sk-forge-abc", "env:FORGE_KEY_2"]；留空 = 仅本机可访问
+  rate_limit_per_min: 60
+  approve_mode: auto_reject
+  db_path: data/sessions.db
+
 # ====================== 切回云端（DeepSeek）参考 ======================
 # 不想用本地端点时，把上面的 models / roles 换成下面这组即可（debate / router 不用动）：
 # models:
