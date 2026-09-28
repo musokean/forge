@@ -8,6 +8,7 @@ from __future__ import annotations  # py3.9 兼容：X | None 注解（CI #2 实
 
 import asyncio
 import datetime
+import json
 import os
 import sys
 import time
@@ -145,6 +146,8 @@ def _help_text() -> str:
         "         /serve <端口>                 指定端口启动\n"
         "         或在启动时直接：forge --serve [--host 127.0.0.1] [--port 8080]\n"
         "         （需装可选依赖：pip install \"handcraft-agent[server]\"；接口文档见 <地址>/docs）\n"
+        "/logs   日志（#7 完整日志）：/logs 状态 · tail [n] 最近 · errors [n] 告警 · path · clear\n"
+        "/sandbox 工具沙箱（#4）：/sandbox 状态 · mode <auto|docker|local|off> 改策略 · test <命令> 试跑\n"
         "/exit   退出（或直接输 exit / quit）\n",
         "",
         "■ 生成中",
@@ -968,6 +971,95 @@ def _web_command(arg: str) -> None:
 _WEB_INSTANCE = None
 
 
+def _logs_command(arg: str) -> None:
+    """日志管理（#7 完整日志）。
+    /logs                 状态：级别 / 目录 / 文件数 / 体积 / 保留天数
+    /logs tail [n]        最近 n 条事件（默认 10）
+    /logs errors [n]      WARNING 及以上（默认 10）
+    /logs path            日志目录绝对路径
+    /logs clear           清空日志文件
+    """
+    from src.logging_setup import get_logger
+
+    log = get_logger()
+    arg = (arg or "").strip()
+    sub = arg.split()[0] if arg else ""
+    rest = arg[len(sub):].strip()
+
+    def _fmt(rec):
+        head = f"{rec.get('ts', '')[11:19]} {str(rec.get('level', '')):<7} {rec.get('event', '')}"
+        extra = {k: v for k, v in rec.items() if k not in ("ts", "level", "event")}
+        return head + ("  " + json.dumps(extra, ensure_ascii=False) if extra else "")
+
+    if sub in ("", "status"):
+        st = log.stats()
+        state = "开" if st["enabled"] else "关"
+        print(paint(f"  📜 日志：{state} · 级别 {st['level']} · 保留 {st['keep_days']} 天 · "
+                    f"单文件上限 {st['max_mb']}MB", C.SKY))
+        print(paint(f"     {st['files']} 个文件 / {st['bytes'] / 1024:.1f} KB · {st['dir']}", C.SKY_DIM))
+        if st.get("last_error"):
+            print(paint(f"     ⚠ 最近错误：{st['last_error']}", C.RED))
+        return
+    if sub == "path":
+        print(paint("  " + log.stats()["dir"], C.SKY))
+        return
+    if sub == "clear":
+        print(paint(f"  🧹 已清空 {log.clear()} 个日志文件", C.SKY_DIM))
+        return
+    if sub in ("tail", "errors"):
+        try:
+            k = int(rest) if rest else 10
+        except ValueError:
+            k = 10
+        rows = log.errors(limit=k) if sub == "errors" else log.read(limit=k)
+        if not rows:
+            print(paint("  （无记录）", C.SKY_DIM))
+            return
+        for rec in rows:
+            lv = str(rec.get("level", ""))
+            color = C.RED if lv in ("ERROR", "WARNING") else C.SKY_DIM
+            print(paint("  " + _fmt(rec), color))
+        return
+    print(paint("  用法：/logs · /logs tail [n] · /logs errors [n] · /logs path · /logs clear", C.SKY))
+
+
+def _sandbox_command(arg: str) -> None:
+    """沙箱管理（#4 工具安全沙箱）。
+    /sandbox                    状态：策略 / Docker 可用性 / 资源限制
+    /sandbox mode <auto|docker|local|off>   改策略（写回配置，立即生效）
+    /sandbox test <命令>        跑一条命令看实际走哪条路径
+    """
+    from src.sandbox import get_sandbox
+
+    arg = (arg or "").strip()
+    parts = arg.split(None, 2)
+    sub = parts[0].lower() if parts else ""
+
+    if sub == "mode" and len(parts) >= 2:
+        from src.config_writer import set_sandbox_mode
+
+        ok, msg = set_sandbox_mode(parts[1])
+        print(paint(("  ✅ " if ok else "  ❌ ") + msg, C.SKY if ok else C.RED))
+        if ok:
+            get_sandbox(refresh=True)      # 热生效
+        return
+    if sub == "test" and len(parts) >= 2:
+        cmd = arg[len(parts[0]):].strip()      # 取子命令之后的**整条**命令（多词命令别只取最后一段）
+        res = get_sandbox().run(cmd)
+        print(paint(f"  🧪 [{res.mode}] 退出码 {res.exit_code} · {res.ms:.0f}ms", C.SKY))
+        print(paint("  " + (res.output or "").replace(chr(10), chr(10) + "  ")[:800], C.SKY_DIM))
+        return
+
+    st = get_sandbox().status()
+    eff = st["effective_mode"]
+    print(paint(f"  🧰 沙箱：配置 {st['configured_mode']} → 实际 {eff}", C.SKY))
+    dock = (f"可用（v{st['docker_version']}）" if st["docker_available"] else "不可用")
+    print(paint(f"     Docker：{dock} · 镜像 {st['image']}", C.SKY_DIM))
+    lim = st["limits"]
+    print(paint(f"     限制：网络 {'开' if lim['network'] else '关'} · 内存 {lim['memory']} · CPU {lim['cpus']} · "
+                f"超时 {lim['timeout']}s · 工作目录 {'可写' if lim['mount_rw'] else '只读'}", C.SKY_DIM))
+    print(paint(f"     危险命令拦截：{st['deny_patterns']} 条模式 · /sandbox mode <策略> 切换", C.SKY_DIM))
+
 def _serve_command(arg: str) -> None:
     """API 服务管理：#14 部署的 REPL 入口。
     /serve         起 HTTP API（FastAPI：多会话 + 鉴权 + 限流）
@@ -1119,6 +1211,10 @@ async def _repl() -> None:
             _web_command(line[4:].strip())
         if line == "/serve" or line.startswith("/serve "):
             _serve_command(line[6:].strip())
+        if line == "/logs" or line.startswith("/logs "):
+            _logs_command(line[5:].strip())
+        if line == "/sandbox" or line.startswith("/sandbox "):
+            _sandbox_command(line[8:].strip())
             continue
         # 自动路由：AI 自己判断任务类型（单答 / 并行 / 辩论）
         try:

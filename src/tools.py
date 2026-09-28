@@ -247,12 +247,19 @@ def calculator(expression: str) -> str:
     read_only=False,
 )
 def run_command(command: str) -> str:
+    """执行 shell 命令——**走 #4 沙箱**（A06）：Docker 可用则容器隔离（断网 / 限资源 /
+    只读挂载 / 非 root），不可用则降级为加固的本机执行（环境变量白名单 + 危险模式拦截 + 超时）。
+
+    环境变量白名单还堵掉一个真问题：旧实现把 os.environ 整体交给子进程，
+    任意命令都能读到 DEEPSEEK_API_KEY 这类宿主密钥。
+    """
     try:
-        r = subprocess.run(command, shell=True, capture_output=True, timeout=30)
-        out = _decode_bytes(r.stdout or b"") + _decode_bytes(r.stderr or b"")
-        return out.strip() or "(命令无输出)"
-    except subprocess.TimeoutExpired:
-        return "命令超时（30 秒）"
+        from .sandbox import get_sandbox
+
+        res = get_sandbox().run(command)
+        return res.output
+    except Exception as e:      # 含 SandboxUnavailable（mode=docker 且本机无 Docker）
+        return f"命令未执行：{e}"
 
 
 @tool(

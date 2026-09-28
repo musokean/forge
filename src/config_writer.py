@@ -310,3 +310,25 @@ def set_model_key(alias, value, use_env=False):
             _write(lines)
             return True, f"模型「{alias}」key 已配置（{'环境变量' if use_env else '明文'}）"
     return False, f"models 段里找不到「{alias}」的 api_key / api_key_env 行"
+
+
+def set_sandbox_mode(mode):
+    """改沙箱策略（sandbox.mode）：auto / docker / local / off（#4 工具安全沙箱）。"""
+    mode = (mode or "").strip().lower()
+    if mode not in ("auto", "docker", "local", "off"):
+        return False, "只支持 auto / docker / local / off"
+
+    lines = _read()
+    s, e = _section_range(lines, "sandbox")
+    if s is None:
+        return False, "配置里找不到 sandbox 段"
+
+    pat = re.compile(r"^(\s*mode\s*:\s*)([^\s#]+)(.*)$")
+    for i in range(s, e):
+        body, nl = _split_nl(lines[i])
+        mm = pat.match(body)
+        if mm:
+            lines[i] = f"{mm.group(1)}{mode}{mm.group(3)}{nl}"
+            _write(lines)
+            return True, f"沙箱策略 →「{mode}」（/sandbox 查看 · 立即生效）"
+    return False, "sandbox 段里没有 mode 行"

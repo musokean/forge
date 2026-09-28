@@ -1,6 +1,7 @@
 """核心 ReAct 循环 + 工程底盘：上下文截断、token 统计（对应 A01 架构、A05 上下文、A09 可观测）。"""
 import asyncio
 import json
+import os
 import time
 
 from .config import load_config, resolve_model
@@ -13,6 +14,16 @@ from .approval import Approver
 from .skills import compose_prompt, schema_filter
 from .spinner import spinner_start, spinner_stop
 from .keypress import poll_key, read_guide_line
+
+
+def _log(level, event, **fields):
+    """结构化日志打点（#7 完整日志）：日志不可用时绝不影响主流程。"""
+    try:
+        from .logging_setup import log_event
+
+        log_event(level, event, **fields)
+    except Exception:
+        pass
 
 
 def _estimate_tokens(text):
@@ -35,6 +46,7 @@ class Agent:
         # 系统提示：主对话（未显式传 system_prompt）叠加激活技能片段；辩论/并行等专用人设不叠加
         base_prompt = system_prompt or self._system_prompt()
         self._explicit_prompt = system_prompt is not None
+        self._run_id = None  # 每次 run() 生成的关联 id（#7 完整日志）
         self._system = compose_prompt(base_prompt) if not self._explicit_prompt else base_prompt
         self.name = name  # 流式输出时的显示名前缀
         self.stream = stream  # 是否流式输出（并行子任务用 False 避免输出交错）
@@ -227,12 +239,17 @@ class Agent:
         return execute(name, args)
 
     def _finish_trace(self, content=None):
-        """run() 出口统一收尾：answer（若有）+ run_end（总耗时、总 token）。"""
+        """run() 出口统一收尾：answer（若有）+ run_end（总耗时+token）+ 结构化日志。"""
         if content is not None:
             self.tracer.record("answer", content=content)
         p, c = self.total_tokens["prompt"], self.total_tokens["completion"]
-        self.tracer.record("run_end", ms=(time.monotonic() - self._t_start) * 1000,
-                           prompt_tokens=p, completion_tokens=c)
+        ms = (time.monotonic() - self._t_start) * 1000
+        self.tracer.record("run_end", ms=ms, prompt_tokens=p, completion_tokens=c)
+        # #7 完整日志：一次 run 一行（角色/模型/步数/工具/耗时/token），部署后可回溯
+        s = self.tracer.summary()
+        _log("INFO", "run_end", run_id=getattr(self, "_run_id", None), role=self.role,
+             model=self.tracer.model, ms=ms, prompt_tokens=p, completion_tokens=c,
+             steps=s.get("steps"), tools=s.get("tools"))
 
     # ---------- 反思自纠错（A07 组合拳末环） ----------
 
@@ -276,7 +293,10 @@ class Agent:
         self._tok_before = dict(self.total_tokens)
         self._t_start = time.monotonic()
         self._ttft = None  # 首字等待（首个响应块到达）
+        self._run_id = os.urandom(4).hex()
         self.tracer.record("run_start", task=task)
+        _log("INFO", "run_start", run_id=self._run_id, role=self.role,
+             model=self.tracer.model, task=task)
         last_sig = None   # 上一轮工具调用签名
         repeat = 0        # 连续重复次数
         force_answer = False  # 强制收敛标志（A01/A07 防死循环）
@@ -294,6 +314,8 @@ class Agent:
                 except Exception as e:
                     spinner_stop(spin)
                     self._finish_trace()
+                    _log("ERROR", "llm_failed", run_id=getattr(self, "_run_id", None),
+                         role=self.role, error=str(e))
                     ep = resolve_model(self.cfg, self.role).get("base_url", "?")
                     return f"⚠ 模型调用失败（端点 {ep}）：{e}（已重试并尝试降级通道，请检查端点/余额/网络）"
                 spinner_stop(spin)

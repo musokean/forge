@@ -6,7 +6,7 @@
 
 > **English**: [README.md](README.md)
 
-把 M0→M3 里程碑落成代码——ReAct 核心循环 + 工程底盘（工具只读分级 / 上下文截断+滚动摘要 / 错误重试+降级 / token 统计 / 每步 trace / 写操作审批）+ 多智能体编排（并行拆解 / 讨论式辩论 / 多模型路由 / 自动路由 / 流式输出）+ 结构化输出 + 本地知识库（SQLite+FTS5）+ 黄金集评估 + Web 界面 + HTTP API 服务（多会话 + 鉴权 + 限流）+ Markdown 导出。**模型配置驱动、零外部重依赖**。
+把 M0→M3 里程碑落成代码——ReAct 核心循环 + 工程底盘（工具只读分级 / 上下文截断+滚动摘要 / 错误重试+降级 / token 统计 / 每步 trace / 写操作审批）+ 多智能体编排（并行拆解 / 讨论式辩论 / 多模型路由 / 自动路由 / 流式输出）+ 结构化输出 + 本地知识库（SQLite+FTS5）+ 黄金集评估 + Web 界面 + HTTP API 服务（多会话 + 鉴权 + 限流）+ 工具安全沙箱（Docker 隔离/加固本机降级）+ 完整日志（结构化+脱敏）+ Markdown 导出。**模型配置驱动、零外部重依赖**。
 
 ---
 
@@ -67,6 +67,8 @@ forge --serve --port 8080    # 接口文档 http://127.0.0.1:8080/docs
 | `/eval` | 黄金集回归（防变笨）：`/eval` 全量 · `list` 列出 · `add 任务|关键词|分` 新增 · `<序号>` 单例 · `export` 导出报告 |
 | `/web` | Web 网页界面：`/web` 拉起（浏览器访问）· `/web stop` 停止 |
 | `/serve` | API 服务（#14 部署）：`/serve` · `/serve 端口` 起 HTTP API（多会话 + 鉴权 + 限流）· `/serve stop` 停止 |
+| `/logs` | 日志（#7）：`/logs` 状态 · `tail [n]` 最近事件 · `errors [n]` 告警 · `path` 目录 · `clear` 清空 |
+| `/sandbox` | 工具沙箱（#4）：`/sandbox` 状态 · `mode <auto\|docker\|local\|off>` 切换策略 · `test <命令>` 试跑看实际路径 |
 | `/help` | 查看帮助 |
 | `/exit` | 退出（或直接输 `exit` / `quit`） |
 
@@ -209,8 +211,40 @@ server:
 
 ---
 
-## 五、知识库（索引库即源文档）
+### ⑩ logging —— 完整日志（#7）
 
+```yaml
+logging:
+  enabled: true        # 关掉则完全不落盘
+  level: INFO          # DEBUG / INFO / WARNING / ERROR
+  dir: data/logs       # 每天一个文件 forge-YYYYMMDD.jsonl
+  keep_days: 14        # 超期自动清理
+  max_mb: 20           # 单文件上限，超过切分 .1/.2
+  console: false       # 同时打到 stderr（默认关）
+```
+一条事件一行 JSON（`ts/level/event/run_id` + 字段）。**`api_key` / `Authorization` / `sk-xxx` 写入前一律变 `***`**——部署后的日志不能泄漏密钥。
+
+### ⑪ sandbox —— 工具安全沙箱（#4）
+
+```yaml
+sandbox:
+  mode: auto             # auto：Docker 可用走容器、不可用降级加固本机
+                         # docker：强制容器（无 Docker 直接拒绝执行，生产用这个）
+                         # local：加固本机 / off：直通（仅调试）
+  image: python:3.11-slim
+  timeout: 30
+  network: false         # 容器默认断网
+  memory: 256m           # 资源上限（防 fork 炸弹/吃光内存）
+  cpus: "1.0"
+  pids_limit: 128
+  mount_rw: false        # 工作目录默认只读挂载
+  max_output: 100000
+  deny_patterns: []      # 追加的危险命令正则（内置已有 rm -rf /、mkfs、shutdown…）
+```
+
+---
+
+## 五、知识库（索引库即源文档）
 forge 的知识库是**自持的**：知识直接沉淀进库内条目（SQLite + FTS5 全文检索），**不依赖外部源文件**。新用户零配置开箱即用——对话里说「记住这个 / 记到知识库」，forge 自动调 `kb_add` 写入；外部文件导入（ingest/sync）只是可选的补充通道。
 
 **管理命令 `/kb`**：
@@ -272,6 +306,8 @@ handcraft-agent/
 │   ├── eval.py           # #13 黄金集评估（关键词命中 + LLM-as-judge + 报告导出）
 │   ├── web.py            # #12 Web 界面（零依赖 http.server + 内嵌聊天页）
 │   ├── server.py         # #14 API 服务（FastAPI：多会话 + 鉴权 + 限流 + 访问日志）
+│   ├── sandbox.py        # #4 工具安全沙箱（Docker 隔离 / 加固本机降级）
+│   ├── logging_setup.py  # #7 完整日志（结构化 JSONL + 轮转 + 保留期 + 脱敏）
 │   ├── keypress.py       # 生成期键盘轮询（Esc 中断 / 引导输入，跨平台）
 │   ├── spinner.py        # 等待动画（旋转指示器，首字到达即停）
 │   └── console.py        # 终端样式（ANSI + 中文对齐，零依赖）
@@ -406,8 +442,40 @@ curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
 
 ---
 
-## 十三、测试与压测
+## 十四、沙箱与日志（#4 / #7）
 
+### 一、工具安全沙箱（#4）
+
+`run_command` 不再直接在裸机上跑。策略看 `config/models.yaml` 的 `sandbox.mode`：
+
+| 模式 | 行为 |
+|------|------|
+| `auto`（默认） | Docker 可用 → 容器隔离；不可用 → **加固的本机执行** |
+| `docker` | 只用容器；本机没有 Docker 就**拒绝执行**（生产部署用这个） |
+| `local` | 加固的本机执行（不需要 Docker） |
+| `off` | 直通（等同旧行为，仅本地调试） |
+
+容器约束：`--rm --network=none`（默认断网）、内存/CPU/PID 上限、根文件系统只读 + `/tmp` 可写、非 root（`65534`）、工作目录**只读挂载**、超时后自动 `docker rm -f` 清容器。降级到本机时仍有实际防线：**环境变量白名单**（命令读不到 `DEEPSEEK_API_KEY` 这类宿主密钥）、危险命令模式拦截（`rm -rf /`、`mkfs`、`dd` 写裸设备、`shutdown`…）、超时强杀、输出截断。
+
+交互里可自查：`/sandbox`（状态）· `/sandbox mode docker`（切策略，立即生效）· `/sandbox test echo hi`（试跑一条，看实际走哪条路径）。
+
+> 能力边界：沙箱管「执行的副作用与密钥泄漏」，**审批层（#4 审批）管「要不要执行」**——两层叠加才是完整的工具安全防线。
+
+### 二、完整日志（#7）
+
+每次 run、每个 HTTP 请求落一行 JSON 到 `data/logs/forge-YYYYMMDD.jsonl`：
+
+```json
+{"ts":"2026-09-28T23:31:34.123","level":"INFO","event":"run_end","run_id":"075ca629","role":"default","model":"deepseek-v4-flash","ms":3475.0,"prompt_tokens":812,"completion_tokens":96,"steps":3,"tools":["calculator({...})"]}
+```
+
+- **轮转与保留**：按天分文件，单文件超 `logging.max_mb` 切分，超 `logging.keep_days` 自动清理。
+- **脱敏**：字段名含 `key`/`token`/`secret`/`authorization` 的值、以及 `sk-…` / `Bearer …` / `gho_…` 形态的字符串，一律写 `***`——**部署后的日志不能泄漏密钥**。
+- **查看**：`/logs`（状态）· `/logs tail 20`（最近事件）· `/logs errors`（告警以上）· `/logs path` · `/logs clear`。
+
+---
+
+## 十五、测试与压测
 ```bash
 python test_m0.py                    # M0 最小循环验收
 python test_m1.py                    # M1 工程底盘五件套
@@ -427,6 +495,7 @@ python test_circuit_breaker.py       # #5 熔断：三态机 + chat/stream_chat 
 python test_eval.py                  # #13 评估：黄金集加载/判定/报告（全 mock）
 python test_web.py                   # #12 Web：HTTP 服务端到端（起真实服务 + mock Agent）
 python test_server.py                # #14 API 服务：鉴权/限流/会话持久化/端点（全 mock）
+python test_sandbox_logging.py       # #4 沙箱 + #7 完整日志（假 docker / 脱敏 / 轮转）
 python test_interrupt.py             # 生成期打断/引导：poll_key 跨平台 + 流式中断重生成
 ```
 
@@ -434,7 +503,7 @@ python test_interrupt.py             # 生成期打断/引导：poll_key 跨平�
 
 ---
 
-## 十四、设计脉络（模块 → 原理）
+## 十六、设计脉络（模块 → 原理）
 
 每个模块对应一套可讲清的 Agent 原理，方便按图索骥：
 

@@ -50,6 +50,7 @@ jobs:
             test_server.py \
             test_device.py \
             test_voice.py \
+            test_sandbox_logging.py \
             test_approval.py \
             test_knowledge.py \
             test_circuit_breaker.py \

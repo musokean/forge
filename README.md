@@ -51,12 +51,14 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **Reliability** | Golden-set regression (`/eval`, keyword-hit + LLM-as-judge), model-failure resilience, endpoint self-check on startup |
 | **UX** | Sky-blue theme, interrupt/redirect generation (Esc / type a steer), auto tasks, Web UI |
 | **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
+| **Safety (#4)** | Command sandbox: Docker isolation when available (no network, read-only mount, memory/CPU/PID caps, non-root), hardened local fallback, dangerous-command blocking. Host environment is never handed to child processes — a command can no longer read your API keys |
+| **Logging (#7)** | Structured JSONL logs with rotation, retention and **secret redaction**; per-run correlation ids (role/model/steps/tokens/latency); HTTP request log; `/logs` to inspect |
 
 ## Commands
 
 ```
 /reset /usage /trace /kb /export /key /model /config /circuit
-/skill /memory /remember /task /eval /web /serve /help /exit
+/skill /memory /remember /task /eval /web /serve /logs /sandbox /help /exit
 ```
 
 `/key sk-xxx` — paste a key, auto-assigns to the main model. `/config` — guided panel, no YAML hand-editing needed.
@@ -78,6 +80,8 @@ handcraft-agent/
 │   ├── eval.py           # golden-set evaluation
 │   ├── web.py            # zero-dependency web chat
 │   ├── server.py         # #14 HTTP API service (sessions + auth + rate limit)
+│   ├── sandbox.py        # #4 command sandbox (Docker isolation / hardened local)
+│   ├── logging_setup.py  # #7 structured JSONL logs (rotation, retention, redaction)
 │   ├── keypress.py       # interrupt/steer during generation
 │   └── ...
 ├── main.py               # CLI entry
@@ -114,8 +118,36 @@ curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
      -d '{"message": "hello"}' http://127.0.0.1:8080/api/chat
 ```
 
-## Tests
+## Sandbox and logs
 
+### Command sandbox (#4)
+
+`run_command` no longer executes straight on your machine. Policy is `sandbox.mode` in `config/models.yaml`:
+
+| Mode | Behaviour |
+|---|---|
+| `auto` (default) | Docker when available, otherwise **hardened local execution** |
+| `docker` | container only — **refuses to run** if Docker is missing (use this in production) |
+| `local` | hardened local execution, no Docker needed |
+| `off` | passthrough (legacy behaviour, debug only) |
+
+Container runs are locked down: `--rm --network=none`, memory/CPU/PID caps, read-only rootfs + tmpfs `/tmp`, non-root user `65534`, the working directory mounted **read-only**, and the container is force-removed on timeout. The local fallback still buys you real protection: a host-env allowlist (so a command can't read `DEEPSEEK_API_KEY`), dangerous-command patterns blocked (`rm -rf /`, `mkfs`, `dd` to raw devices, `shutdown`…), timeouts and output clipping.
+
+Check it from the REPL: `/sandbox` (status), `/sandbox mode docker` (switch, hot-reloaded), `/sandbox test echo hi` (see which path a command actually takes).
+
+### Structured logs (#7)
+
+Every run and every HTTP request is written as one JSON line to `data/logs/forge-YYYYMMDD.jsonl`:
+
+```json
+{"ts":"2026-09-28T23:31:34.123","level":"INFO","event":"run_end","run_id":"075ca629","role":"default","model":"deepseek-v4-flash","ms":3475.0,"prompt_tokens":812,"completion_tokens":96,"steps":3,"tools":["calculator({...})"]}
+```
+
+- **Rotation & retention**: daily files, split at `logging.max_mb`, older than `logging.keep_days` auto-pruned.
+- **Redaction**: values under keys containing `key`/`token`/`secret`/`authorization` and anything shaped like `sk-…` / `Bearer …` / `gho_…` are written as `***` — a deployed agent's logs must never leak credentials.
+- **Inspect**: `/logs` (status), `/logs tail 20`, `/logs errors`, `/logs path`, `/logs clear`.
+
+## Tests
 ```bash
 python test_router.py     # task routing (rule-first + model fallback)
 python test_interrupt.py  # interrupt / steer during generation

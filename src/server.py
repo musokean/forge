@@ -505,10 +505,20 @@ def create_app(cfg=None, service=None, api_keys=None, rate_limit=None, store=Non
             sid = (request.path_parameters or {}).get("sid") or ""
         except Exception:
             pass
+        client = request.client.host if request.client else "-"
         try:
             print(f"[forge] {request.method} {request.url.path} {response.status_code} "
-                  f"{ms:.0f}ms client={request.client.host if request.client else '-'}"
+                  f"{ms:.0f}ms client={client}"
                   + (f" session={sid}" if sid else ""), flush=True)
+        except Exception:
+            pass
+        # #7 完整日志：同一条请求也落结构化日志（可被采集/分析，含脱敏）
+        try:
+            from .logging_setup import log_event
+
+            log_event("INFO" if response.status_code < 500 else "ERROR", "http_request",
+                      method=request.method, path=request.url.path,
+                      status=response.status_code, ms=ms, client=client, session=sid)
         except Exception:
             pass
         response.headers["X-Forge-Version"] = __version__
@@ -561,6 +571,12 @@ def create_app(cfg=None, service=None, api_keys=None, rate_limit=None, store=Non
         except ValueError as e:
             raise HTTPException(status_code=400, detail=str(e))
         except Exception as e:  # 模型/工具异常不裸抛 500 堆栈给调用方
+            try:
+                from .logging_setup import log_event
+
+                log_event("ERROR", "chat_failed", session=sid, error=str(e))
+            except Exception:
+                pass
             return JSONResponse(status_code=502,
                                 content={"error": "处理失败", "detail": str(e), "session_id": sid})
 

@@ -44,6 +44,17 @@ reflect:
   judge_role: fallback
 # 服务化（#14）：forge --serve 起 HTTP API，需 pip install "handcraft-agent[server]"
 # api_keys 留空 = 只允许本机访问；对外服务务必填 key（或用环境变量 FORGE_API_KEY）
+# 日志（#7 完整日志）：结构化 JSONL（data/logs/）+ 轮转/保留期/脱敏；/logs 可查
+logging:
+  enabled: true
+  level: INFO
+  keep_days: 14
+  max_mb: 20
+# 沙箱（#4）：run_command 执行隔离。auto=Docker 可用走容器、不可用降级加固本机
+sandbox:
+  mode: auto
+  image: python:3.11-slim
+  timeout: 30
 server:
   host: 127.0.0.1
   port: 8080

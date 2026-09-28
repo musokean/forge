@@ -154,6 +154,38 @@ server:
   approve_mode: auto_reject
   db_path: data/sessions.db
 
+# ---- 9) 日志（#7 完整日志）：结构化 JSONL + 轮转 + 保留期 + 脱敏 ----
+#   data/logs/forge-YYYYMMDD.jsonl，一条事件一行 JSON（ts/level/event/run_id + 字段）；
+#   单文件超 max_mb 切分，超 keep_days 自动清理。
+#   **api_key / Authorization / sk-xxx 在写入前一律变 ***（部署服务的硬要求）**
+#   /logs 命令可查（tail / errors / stats / path）。
+logging:
+  enabled: true
+  level: INFO          # DEBUG / INFO / WARNING / ERROR
+  dir: data/logs
+  keep_days: 14
+  max_mb: 20
+  console: false       # 同时打到 stderr（默认关，别干扰 CLI 的输出）
+
+# ---- 10) 沙箱（#4 工具安全沙箱）：run_command 的执行隔离 ----
+#   mode: auto（默认。Docker 可用 → 容器隔离；不可用 → 降级加固本机执行并提示）
+#         docker（强制容器；本机无 Docker 则**拒绝执行**，生产部署用这个）
+#         local（加固本机执行）/ off（直通，等同旧行为，仅调试）
+#   容器约束：--rm --network=none --memory/--cpus/--pids-limit --read-only --user 65534
+#            工作目录只读挂载；超时后自动 docker rm -f 清容器
+#   本地加固：环境变量白名单（不再把宿主 API key 交给子进程）+ 危险命令拦截 + 超时强杀
+sandbox:
+  mode: auto
+  image: python:3.11-slim     # 需要别的运行时（node/ffmpeg…）换成对应镜像
+  timeout: 30
+  network: false              # 容器默认断网（true = 允许出网）
+  memory: 256m
+  cpus: "1.0"
+  pids_limit: 128
+  mount_rw: false             # 工作目录默认只读挂载
+  max_output: 100000          # 输出截断上限（字符）
+  deny_patterns: []           # 追加的危险命令正则（内置已有 rm -rf /、mkfs、shutdown…）
+
 # ====================== 切回云端（DeepSeek）参考 ======================
 # 不想用本地端点时，把上面的 models / roles 换成下面这组即可（debate / router 不用动）：
 # models:
