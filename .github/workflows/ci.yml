@@ -48,6 +48,8 @@ jobs:
             test_eval.py \
             test_web.py \
             test_server.py \
+            test_device.py \
+            test_voice.py \
             test_approval.py \
             test_knowledge.py \
             test_circuit_breaker.py \
