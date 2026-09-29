@@ -386,18 +386,45 @@ def kb_add(title: str, content: str) -> str:
 # 单例懒加载：核心功能不 import fake_device，不装/缺文件不影响 forge 主流程。
 
 _device = None
+_device_error = ""
 
 
 def _get_device():
-    """懒加载设备单例（延迟 import，失败返回 None 不崩主流程）。"""
-    global _device
+    """懒加载设备单例（延迟 import，失败返回 None 不崩主流程）。
+
+    配置驱动（`config/models.yaml` 的 `device` 段）：
+      · `device.enabled: false` 或 `transport: sim`（默认）→ Phase 0 进程内模拟器 `fake_device`
+      · `device.enabled: true` 且 `transport: serial|mqtt` → **硬件 Phase 1 真链路**
+        （`src/hwcontrol.py` 的控制平面：资产目录 + 策略 + 命令状态机），首次调用自动握手
+    两者接口一致（鸭子类型），所以下面几个工具函数一行都不用改。
+    """
+    global _device, _device_error
     if _device is None:
         try:
-            from fake_device import BeautyDevice
-            _device = BeautyDevice()
-        except Exception:
+            from .config import load_config
+
+            conf = (load_config() or {}).get("device") or {}
+            transport = str(conf.get("transport") or "sim").lower()
+            if conf.get("enabled") and transport not in ("sim", "fake", "memory"):
+                from .hwcontrol import get_link
+
+                link = get_link()
+                if not link.connected:
+                    link.connect()
+                _device = link
+            else:
+                from fake_device import BeautyDevice
+
+                _device = BeautyDevice()
+        except Exception as e:               # 真链路连不上：把原因带给工具调用方，别吞
+            _device_error = str(e)
             _device = False  # 标记不可用，避免每次重试
     return _device if _device else None
+
+
+def _dev_unavailable() -> str:
+    return json.dumps({"ok": False, "reason": f"设备不可用（{_device_error or '未找到 fake_device 模块'}）"},
+                      ensure_ascii=False)
 
 
 @tool(
@@ -409,7 +436,7 @@ def _get_device():
 def device_status() -> str:
     dev = _get_device()
     if dev is None:
-        return json.dumps({"ok": False, "reason": "设备不可用（未找到 fake_device 模块）"}, ensure_ascii=False)
+        return _dev_unavailable()
     return json.dumps(dev.status(), ensure_ascii=False)
 
 
@@ -422,7 +449,7 @@ def device_status() -> str:
 def device_power(action: str) -> str:
     dev = _get_device()
     if dev is None:
-        return json.dumps({"ok": False, "reason": "设备不可用"}, ensure_ascii=False)
+        return _dev_unavailable()
     if action == "on":
         result = dev.power_on()
     elif action == "off":
@@ -441,5 +468,18 @@ def device_power(action: str) -> str:
 def device_level(level: int) -> str:
     dev = _get_device()
     if dev is None:
-        return json.dumps({"ok": False, "reason": "设备不可用"}, ensure_ascii=False)
+        return _dev_unavailable()
     return json.dumps(dev.set_level(level), ensure_ascii=False)
+
+
+@tool(
+    name="device_reset",
+    description="复位美容仪的过热保护（写操作）：过热保护触发后设备无法开机/调档，需先复位。仅在安全保护触发后使用",
+    parameters={"type": "object", "properties": {}},
+    read_only=False,
+)
+def device_reset() -> str:
+    dev = _get_device()
+    if dev is None:
+        return _dev_unavailable()
+    return json.dumps(dev.reset_safety(), ensure_ascii=False)

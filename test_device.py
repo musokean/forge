@@ -6,6 +6,7 @@ import json
 import sys
 import time
 import unittest
+from unittest.mock import patch
 
 sys.path.insert(0, ".")
 
@@ -89,7 +90,25 @@ class TestBeautyDevice(unittest.TestCase):
 
 
 class TestHardwareTools(unittest.TestCase):
-    """工具注册 / 只读分级 / 审批拦截。"""
+    """工具注册 / 只读分级 / 审批拦截（Phase 0 进程内模拟器）。"""
+
+    def setUp(self):
+        """把设备配置钉死在 sim。
+
+        2026-09-28 踩坑：tools._get_device() 改成配置驱动后，这些用例的结果开始随
+        **本机 config/models.yaml 的 device 段**变化（本机冒烟配成 serial 就会去连真链路
+        → 用例假失败）。测试不该依赖本机配置，故显式 patch；真链路的用例在 test_hardware.py。
+        """
+        import src.tools as _tools
+
+        patcher = patch("src.config.load_config",
+                        return_value={"device": {"enabled": False, "transport": "sim"}})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        _tools._device = None
+        _tools._device_error = ""
+        self.addCleanup(lambda: (setattr(_tools, "_device", None),
+                                 setattr(_tools, "_device_error", "")))
 
     def test_tools_registered(self):
         self.assertIn("device_status", TOOLS)

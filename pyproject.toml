@@ -19,6 +19,11 @@ server = [
     "fastapi>=0.110",
     "uvicorn>=0.27",
 ]
+# #16 硬件 Phase 1 才需要（串口 / MQTT 真链路）：核心仍零重依赖，不装也不影响 CLI/服务化
+device = [
+    "pyserial>=3.5",     # 串口/透传（COM5 · socket:// · loop://）
+    "paho-mqtt>=2.0",    # MQTT 承载
+]
 
 [project.scripts]
 forge = "main:main"

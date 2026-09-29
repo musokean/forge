@@ -186,6 +186,29 @@ sandbox:
   max_output: 100000          # 输出截断上限（字符）
   deny_patterns: []           # 追加的危险命令正则（内置已有 rm -rf /、mkfs、shutdown…）
 
+# ---- 11) 硬件（#16 硬件 Phase 1：串口 / MQTT 真链路）----
+# enabled: false（默认）= Phase 0 进程内模拟器；true = 走真链路（控制平面：资产目录 + 策略 + 命令状态机）
+# 没有真硬件也能验真链路：python device_sim.py（起模拟设备端）→ serial_url 用 socket://127.0.0.1:9009
+device:
+  enabled: false
+  transport: sim              # sim | serial | mqtt
+  device_id: beauty-01
+  serial_url: "socket://127.0.0.1:9009"   # 或 COM5 / /dev/ttyUSB0 / loop://（socket:// = 串口服务器/透传）
+  baudrate: 115200
+  timeout: 3
+  retries: 2
+  monitor: true               # 后台巡检：限额执行（超温 / 超时自动断电）+ 心跳
+  monitor_interval: 5
+  actor: agent                # 审计记录里的操作者标识
+  assets: {}                  # 多设备：{别名: {device_id, transport, site}}——未知别名一律拒绝
+  policy:
+    stage: low_risk           # readonly | low_risk | approval | closed_loop
+    max_level: 3
+    max_temp_c: 45
+    max_runtime_s: 900
+    cooldown_s: 1
+    allow_remote: false       # 非本机（真·远程）链路默认不可写
+
 # ====================== 切回云端（DeepSeek）参考 ======================
 # 不想用本地端点时，把上面的 models / roles 换成下面这组即可（debate / router 不用动）：
 # models:

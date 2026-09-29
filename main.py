@@ -148,6 +148,7 @@ def _help_text() -> str:
         "         （需装可选依赖：pip install \"handcraft-agent[server]\"；接口文档见 <地址>/docs）\n"
         "/logs   日志（#7 完整日志）：/logs 状态 · tail [n] 最近 · errors [n] 告警 · path · clear\n"
         "/sandbox 工具沙箱（#4）：/sandbox 状态 · mode <auto|docker|local|off> 改策略 · test <命令> 试跑\n"
+        "/device  硬件设备（#16）：/device 状态 · connect [url] · mode <sim|serial|mqtt> [url] · reset · assets · audit\n"
         "/exit   退出（或直接输 exit / quit）\n",
         "",
         "■ 生成中",
@@ -971,6 +972,134 @@ def _web_command(arg: str) -> None:
 _WEB_INSTANCE = None
 
 
+def _device_command(arg: str) -> None:
+    """硬件设备（#16）：Phase 0 模拟器 / Phase 1 真链路（串口 · MQTT）。
+    /device                       状态：承载 / 连接 / 设备身份 / 策略 / 最近审计
+    /device connect [url]         连接（url：COM5 · socket://host:port · loop:// · mqtt://host:port）
+    /device disconnect            断开
+    /device mode <sim|serial|mqtt> [url]   切承载（写回配置）
+    /device reset                 复位过热保护（写操作）
+    /device assets                资产目录（别名 → 设备）
+    /device audit [n]             命令审计尾部
+    """
+    from src.config import load_config
+
+    arg = (arg or "").strip()
+    parts = arg.split(None, 2)
+    sub = parts[0].lower() if parts else ""
+
+    if sub == "mode":
+        if len(parts) < 2:
+            print(paint("  用法：/device mode <sim|serial|mqtt> [url]", C.SKY))
+            return
+        from src.config_writer import set_device_transport
+
+        url = parts[2].strip() if len(parts) > 2 else None
+        ok, msg = set_device_transport(parts[1], url)
+        print(paint(("  ✅ " if ok else "  ❌ ") + msg, C.SKY if ok else C.RED))
+        return
+
+    conf = (load_config() or {}).get("device") or {}
+    transport = str(conf.get("transport") or "sim").lower()
+    real = bool(conf.get("enabled")) and transport not in ("sim", "fake", "memory")
+
+    # ---- Phase 0：进程内模拟器（默认）----
+    if not real:
+        if sub in ("", "status"):
+            try:
+                from fake_device import BeautyDevice
+
+                st = BeautyDevice().status()
+                print(paint("  🤖 硬件承载：Phase 0 进程内模拟器（真链路未启用）", C.SKY))
+                print(paint(f"     {st}", C.SKY_DIM))
+                print(paint("     接真链路：/device mode serial socket://127.0.0.1:9009"
+                            "（另一侧先跑 python device_sim.py）", C.SKY_DIM))
+            except Exception as e:
+                print(paint(f"  ⚠ 模拟器不可用：{e}", C.RED))
+            return
+        if sub in ("connect", "disconnect", "reset"):
+            print(paint("  当前是 Phase 0 模拟器，无需连接。先 /device mode serial|mqtt <url> 切真链路", C.SKY))
+            return
+        if sub == "assets":
+            print(paint("  未启用真链路，资产目录为空。真链路才有多设备资产映射", C.SKY_DIM))
+            return
+        if sub == "audit":
+            print(paint("  未启用真链路，暂无命令审计（真链路会记录每条命令的状态机轨迹）", C.SKY_DIM))
+            return
+        print(paint("  用法：/device · connect [url] · disconnect · mode <sim|serial|mqtt> [url] · reset · assets · audit", C.SKY))
+        return
+
+    # ---- Phase 1：真链路 ----
+    from src.hwcontrol import HardwareError, get_link, reset_link
+
+    url = parts[1].strip() if (sub == "connect" and len(parts) > 1) else ""
+    if url and not url.lower().startswith("mqtt"):
+        from src.config_writer import set_device_transport
+
+        set_device_transport("serial", url)          # 顺带写回配置，下次启动直接生效
+        reset_link()
+    elif url.lower().startswith("mqtt"):
+        print(paint("  ℹ MQTT 的 host/port 走配置（device.mqtt），当前按配置连接", C.SKY_DIM))
+
+    try:
+        # 只有「给了新 url」才需要重建（上面已 reset_link）
+        # 单纯查状态/审计时用 refresh 会把活着的连接重建掉 → 一次 /device 就断链
+        link = get_link()
+    except Exception as e:
+        print(paint(f"  ❌ 初始化真链路失败：{e}", C.RED))
+        return
+
+    if sub == "disconnect":
+        link.close()
+        reset_link()
+        print(paint("  🔌 已断开真链路", C.SKY))
+        return
+
+    if sub == "assets":
+        for a in link.registry.all():
+            print(paint(f"    {a['alias']} → {a['device_id']} · {a.get('site') or '-'}", C.SKY_DIM))
+        return
+
+    if sub == "audit":
+        k = int(parts[1]) if (len(parts) > 1 and parts[1].isdigit()) else 10
+        rows = link.audit(k)
+        if not rows:
+            print(paint("  （暂无审计记录）", C.SKY_DIM))
+        for e in rows:
+            mark = "✅" if e["ok"] else "⛔"
+            extra = f" · {e['reason']}" if e.get("reason") else ""
+            print(paint(f"    {mark} {e['cmd']} {e['args']} · {e['state']}{extra}", C.SKY_DIM))
+        return
+
+    if not link.connected:
+        try:
+            st = link.connect()
+            print(paint(f"  🔗 已连接「{link.name}」· {st.get('transport', '')}", C.SKY))
+            print(paint(f"     能力：{'、'.join(link.capabilities) or '-'}", C.SKY_DIM))
+        except HardwareError as e:
+            print(paint(f"  ❌ 连接失败：{e.message}", C.RED))
+            print(paint("     没有真硬件时先起模拟设备端：python device_sim.py（默认 127.0.0.1:9009）", C.SKY_DIM))
+            return
+
+    if sub == "connect":
+        print(paint("  🔗 已连接", C.SKY))
+        return
+
+    if sub == "reset":
+        print(paint(f"  ♻ {link.reset_safety()}", C.SKY))
+        return
+
+    r = link.status_report()
+    print(paint(f"  🔌 硬件：{'已连接' if r['connected'] else '未连接'} · {r['transport']}"
+                + ("· 远程" if r["remote"] else ""), C.SKY))
+    print(paint(f"     设备 {r['name']} · fw {r['device_info'].get('fw', '-')} · 能力 {len(r['capabilities'])} 项", C.SKY_DIM))
+    print(paint(f"     状态 {r['state']}", C.SKY_DIM))
+    pol = r["policy"]
+    print(paint(f"     策略 阶段 {pol.get('stage')} · 档位≤{pol.get('max_level')} · 温度≤{pol.get('max_temp_c')}°C · "
+                f"时长≤{pol.get('max_runtime_s')}s · 冷却 {pol.get('cooldown_s')}s · "
+                f"远程{'允许' if pol.get('allow_remote') else '禁'}", C.SKY_DIM))
+    for e in r["audit_tail"][-3:]:
+        print(paint(f"     审计 {e['cmd']} {e['args']} → {e['state']}", C.SKY_DIM))
 def _logs_command(arg: str) -> None:
     """日志管理（#7 完整日志）。
     /logs                 状态：级别 / 目录 / 文件数 / 体积 / 保留天数
@@ -1213,6 +1342,8 @@ async def _repl() -> None:
             _serve_command(line[6:].strip())
         if line == "/logs" or line.startswith("/logs "):
             _logs_command(line[5:].strip())
+        if line == "/device" or line.startswith("/device "):
+            _device_command(line[8:].strip())
         if line == "/sandbox" or line.startswith("/sandbox "):
             _sandbox_command(line[8:].strip())
             continue

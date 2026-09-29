@@ -55,6 +55,13 @@ sandbox:
   mode: auto
   image: python:3.11-slim
   timeout: 30
+# 硬件（#16 Phase 1）：enabled=false 走 Phase 0 模拟器；true 走真链路（串口/MQTT）
+device:
+  enabled: false
+  transport: sim
+  serial_url: "socket://127.0.0.1:9009"
+  baudrate: 115200
+
 server:
   host: 127.0.0.1
   port: 8080

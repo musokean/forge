@@ -332,3 +332,42 @@ def set_sandbox_mode(mode):
             _write(lines)
             return True, f"沙箱策略 →「{mode}」（/sandbox 查看 · 立即生效）"
     return False, "sandbox 段里没有 mode 行"
+
+
+def set_device_transport(transport, url=None):
+    """切硬件承载（device 段）：sim / serial / mqtt；同时置 enabled（sim 时关真链路）。"""
+    transport = (transport or "").strip().lower()
+    if transport not in ("sim", "serial", "mqtt"):
+        return False, "只支持 sim / serial / mqtt"
+
+    lines = _read()
+    s, e = _section_range(lines, "device")
+    if s is None:
+        return False, "配置里找不到 device 段"
+
+    pat_t = re.compile(r"^(\s*transport\s*:\s*)([^\s#]+)(.*)$")
+    pat_e = re.compile(r"^(\s*enabled\s*:\s*)([^\s#]+)(.*)$")
+    pat_u = re.compile(r"^(\s*serial_url\s*:\s*)([^\s#]+)(.*)$")
+    hit_t = hit_e = hit_u = False
+    for i in range(s, e):
+        body, nl = _split_nl(lines[i])
+        mm = pat_t.match(body)
+        if mm:
+            lines[i] = f"{mm.group(1)}{transport}{mm.group(3)}{nl}"
+            hit_t = True
+            continue
+        mm = pat_e.match(body)
+        if mm:
+            lines[i] = f"{mm.group(1)}{'false' if transport == 'sim' else 'true'}{mm.group(3)}{nl}"
+            hit_e = True
+            continue
+        if url:
+            mm = pat_u.match(body)
+            if mm:
+                lines[i] = f'{mm.group(1)}"{url}"{mm.group(3)}{nl}'
+                hit_u = True
+    if not (hit_t or hit_e):
+        return False, "device 段里没有 transport / enabled 行"
+    _write(lines)
+    tail = f" · {url}" if url else ""
+    return True, f"硬件承载 →「{transport}」{tail}（/device connect 生效）"
