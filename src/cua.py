@@ -133,7 +133,9 @@ SYS_PLANNER = ("你是 Computer Use 流水线里的**规划者 Planner**。"
                "你只能看到设备声明的能力，不要规划它做不到的动作（例如设备没有 screenshot 就别规划看图）。")
 SYS_EXECUTOR = ("你是 Computer Use 流水线里的**执行者 Executor**。"
                 "针对当前步骤，只给出**一个**动作（cap/action/args），并写清 expect（做完后应该看到什么）。"
-                "判断任务已经完成时用 cap=done。你**不负责判断成败**——那由评估者依据原始证据决定。")
+                "**任务一旦达成（或证据已能证明达成），立刻返回 cap=done**，不要重做已完成的事、也不要去试探"
+                "无关目录——每一步都有成本。文件类动作的路径必须落在「可写目录」之内（相对路径按该目录解析）。"
+                "你**不负责判断成败**——那由评估者依据原始证据决定。")
 SYS_EVALUATOR = ("你是 Computer Use 流水线里的**评估者 Evaluator**。只看下面给出的**原始证据**"
                  "（命令输出/错误码/文件内容/截图说明），判定这一步是否真的达成了目标。"
                  "证据不足、只看到「我说完成了」而没有实际结果时，一律判 ok=false。"
@@ -213,6 +215,20 @@ class ComputerUseLoop:
                 "只依据上面的原始证据判断这一步是否达成。")
         return await self._call("evaluator", Verdict, SYS_EVALUATOR, user)
 
+    async def judge_completion(self, task, trace):
+        """计划用尽时的整体完成检查——**执行者常常忘记说 done**（2026-09-28 真机实测：
+        任务其实做完了，却因为执行者不吭声而整单判失败）。这里让评估者依据全部证据再判一次。"""
+        lines = []
+        for s in trace[-8:]:
+            ev = s.evidence or {}
+            lines.append(f"#{s.index} 目标「{s.goal}」动作 {s.cap}:{s.action}"
+                         f" → 证据 ok={ev.get('ok')} output={str(ev.get('output'))[:200]!r}"
+                         f" error={str(ev.get('error'))[:120]!r}")
+        user = (f"任务：{task}\n\n执行轨迹与原始证据：\n" + "\n".join(lines) +
+                "\n\n只依据上面这些原始证据判断：**整个任务**是否已经完成？"
+                "证据不足以证明完成就判 ok=false。")
+        return await self._call("evaluator", Verdict, SYS_EVALUATOR, user)
+
     async def supervise(self, task, trace):
         lines = [f"#{s.index} 目标「{s.goal}」动作 {s.cap}:{s.action} → {'成功' if s.ok else '失败'}（{s.reason[:80]}）"
                  for s in trace[-6:]]
@@ -224,8 +240,10 @@ class ComputerUseLoop:
     def _device_brief(self, device):
         if not device:
             return "（未指定设备）"
+        root = (getattr(device, "tags", None) or {}).get("root") or ""
+        jail = f"，可写目录 {root}（文件路径必须在此目录内，相对路径按它解析）" if root else ""
         return (f"{device.device_id}（OS {device.os or '?'}，能力 {', '.join(device.capabilities) or '无'}，"
-                f"阶段 {device.stage or '?'}）")
+                f"阶段 {device.stage or '?'}{jail}）")
 
     def _evidence_text(self, evidence):
         if not evidence:
@@ -279,7 +297,8 @@ class ComputerUseLoop:
         from .executor_hub import ExecutorInfo
 
         dev_obj = ExecutorInfo(device_id, host=(dev or {}).get("host", ""), os_name=(dev or {}).get("os", ""),
-                               capabilities=(dev or {}).get("capabilities"), stage=(dev or {}).get("stage"))
+                               capabilities=(dev or {}).get("capabilities"), stage=(dev or {}).get("stage"),
+                               tags=(dev or {}).get("tags"))     # tags 里有可写目录 jail，必须带给模型
         plan = await self.make_plan(task, dev_obj)
         steps = list(plan.steps)[:max_steps]
         trace, replans, failures = [], 0, 0
@@ -288,7 +307,14 @@ class ComputerUseLoop:
 
         while idx < max_steps:
             if not steps:
-                # 计划用尽但任务没被确认完成 → 交给监督者（A25：监督者就是干这个的）
+                # 计划用尽：先让评估者按「全部证据」判一次整体完成（执行者可能忘了说 done），
+                # 确认没完成才交给监督者重规划（A25：监督者就是干这个的）
+                if trace:
+                    verdict = await self.judge_completion(task, trace)
+                    if verdict.ok:
+                        return self._finish(task, device_id, True,
+                                            f"计划用尽，评估者依据全部证据确认任务已完成：{verdict.reason}",
+                                            trace, replans, t0)
                 if replans >= max_replans:
                     return self._finish(task, device_id, False,
                                         f"计划已用尽且重规划已用尽（{replans}/{max_replans}）",

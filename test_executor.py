@@ -542,6 +542,44 @@ class TestComputerUseFourRoles(HubBase):
         self.assertLessEqual(len(res.steps), 3)
         self.assertIn("步数", res.reason)
 
+    def test_completion_gate_when_executor_never_says_done(self):
+        """执行者从不说 done，但证据已能证明完成 → 评估者的整体完成检查要判成功。
+
+        2026-09-28 真机实测：任务确实做完了，执行者不吭声，结果整单报失败。
+        """
+        async def caller(role_key, schema, system, user):
+            self.prompts.setdefault(role_key, []).append(user)
+            if role_key == "planner":
+                return Plan(steps=[PlanStep(goal="写文件")], done_when="文件存在")
+            if role_key == "executor":
+                return Action(cap="write_file", action="", args={"path": "a.txt", "content": "x"})
+            return Verdict(ok=True, reason="证据显示文件已写入")     # 评估者（含整体检查）都说完成
+
+        loop = ComputerUseLoop({"cua": {"max_steps": 3, "max_failures": 9, "max_replans": 0}},
+                               hub=self.hub, caller=caller)
+        with patch.object(self.hub, "dispatch", return_value=_FakeCommand(True, "已写入 1 字节")):
+            res = loop.run_sync("写个文件", device_id="pc-cua")
+        self.assertTrue(res.ok, res.reason)
+        self.assertIn("依据全部证据确认", res.reason)
+
+    def test_device_brief_includes_writable_root(self):
+        """设备简报要带可写目录——否则模型会往 jail 外面写（真机实测白烧了两步）。"""
+        self.hub._devices["pc-cua"].tags = {"root": r"C:\jail\root"}
+        seen = {}
+
+        async def caller(role_key, schema, system, user):
+            seen.setdefault(role_key, []).append(user)
+            if role_key == "planner":
+                return Plan(steps=[PlanStep(goal="g")])
+            if role_key == "executor":
+                return Action(cap="done", action="", args={})
+            return Verdict(ok=True, reason="ok")
+
+        loop = ComputerUseLoop({"cua": {"max_steps": 2}}, hub=self.hub, caller=caller)
+        loop.run_sync("随便", device_id="pc-cua")
+        self.assertIn("可写目录", "\n".join(seen["planner"]))
+        self.assertIn("jail", "\n".join(seen["executor"]))
+
     def test_unknown_device_gives_actionable_error(self):
         loop = self._loop()
         with self.assertRaises(CuaError) as cm:
