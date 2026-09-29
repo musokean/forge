@@ -321,7 +321,13 @@ def set_sandbox_mode(mode):
     lines = _read()
     s, e = _section_range(lines, "sandbox")
     if s is None:
-        return False, "配置里找不到 sandbox 段"
+        nl = _split_nl(lines[0])[1] if lines else "\n"
+        body = ["sandbox:", f"  mode: {mode}", "  image: python:3.11-slim", "  timeout: 30",
+                "  network: false", "  memory: 256m", '  cpus: "1.0"', "  pids_limit: 128",
+                "  mount_rw: false", "  max_output: 100000"]
+        _append_section(lines, "# 沙箱（#4）：run_command 执行隔离；auto=有 Docker 走容器、没有则加固本机", body, nl)
+        _write(lines)
+        return True, f"配置里原本没有 sandbox 段，已补上：策略「{mode}」（/sandbox 查看 · 立即生效）"
 
     pat = re.compile(r"^(\s*mode\s*:\s*)([^\s#]+)(.*)$")
     for i in range(s, e):
@@ -334,6 +340,17 @@ def set_sandbox_mode(mode):
     return False, "sandbox 段里没有 mode 行"
 
 
+
+def _append_section(lines, header_comment, body_lines, nl):
+    """配置里缺某段时，直接在文件末尾补一段（老配置升级用）。"""
+    if lines and not lines[-1].endswith(nl):
+        lines[-1] = lines[-1] + nl
+    lines.append(nl)
+    if header_comment:
+        lines.append(header_comment + nl)
+    lines.extend([l + nl for l in body_lines])
+    return lines
+
 def set_device_transport(transport, url=None):
     """切硬件承载（device 段）：sim / serial / mqtt；同时置 enabled（sim 时关真链路）。"""
     transport = (transport or "").strip().lower()
@@ -343,7 +360,29 @@ def set_device_transport(transport, url=None):
     lines = _read()
     s, e = _section_range(lines, "device")
     if s is None:
-        return False, "配置里找不到 device 段"
+        # 老配置（升级上来的，还没有 device 段）→ 直接补一段，别让用户卡在「找不到 device 段」
+        nl = _split_nl(lines[0])[1] if lines else "\n"
+        body = [
+            f"device:",
+            f"  enabled: {'false' if transport == 'sim' else 'true'}",
+            f"  transport: {transport}",
+            f"  device_id: beauty-01",
+            f'  serial_url: "{url or "socket://127.0.0.1:9009"}"',
+            f"  baudrate: 115200",
+            f"  timeout: 3",
+            f"  retries: 2",
+            f"  monitor: true",
+            f"  policy:",
+            f"    stage: low_risk",
+            f"    max_level: 3",
+            f"    max_temp_c: 45",
+            f"    max_runtime_s: 900",
+            f"    cooldown_s: 1",
+            f"    allow_remote: false",
+        ]
+        _append_section(lines, "# 硬件（#16 Phase 1）：sim=Phase 0 模拟器；serial/mqtt=真链路", body, nl)
+        _write(lines)
+        return True, f"配置里原本没有 device 段，已补上：承载「{transport}」{(' · ' + url) if url else ''}（/device connect 生效）"
 
     pat_t = re.compile(r"^(\s*transport\s*:\s*)([^\s#]+)(.*)$")
     pat_e = re.compile(r"^(\s*enabled\s*:\s*)([^\s#]+)(.*)$")

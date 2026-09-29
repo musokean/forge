@@ -638,5 +638,56 @@ class TestToolsIntegration(HwTestBase):
         self.assertNotIn("connected", st)
 
 
+class TestConfigWriterSections(unittest.TestCase):
+    """老配置升级路径：配置里没有 device / sandbox 段时，写入器要自己补段（别让用户卡住）。
+
+    2026-09-28 实测踩到：安装版（pip 装的）配置是旧模板生成的，没有 device 段，
+    于是 `/device mode serial ...` 直接报「配置里找不到 device 段」——升级路径必须能自愈。
+    """
+
+    def _tmp_cfg(self, body="models: {}\nroles: {}\n"):
+        tmp = tempfile.mkdtemp(prefix="forge-cfg-")
+        path = os.path.join(tmp, "models.yaml")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(body)
+        return path
+
+    def test_appends_missing_device_section(self):
+        import yaml
+
+        import src.config_writer as cw
+
+        path = self._tmp_cfg()
+        with patch.object(cw, "config_path", return_value=path):
+            ok, msg = cw.set_device_transport("serial", "socket://127.0.0.1:9009")
+        self.assertTrue(ok, msg)
+        text = open(path, encoding="utf-8").read()
+        for frag in ("device:", "transport: serial", 'serial_url: "socket://127.0.0.1:9009"',
+                     "enabled: true", "policy:"):
+            self.assertIn(frag, text)
+        cfg = yaml.safe_load(text)
+        self.assertEqual(cfg["device"]["transport"], "serial")
+        self.assertTrue(cfg["device"]["enabled"])
+        # 第二次调用走正常「改行」路径
+        with patch.object(cw, "config_path", return_value=path):
+            ok2, msg2 = cw.set_device_transport("sim")
+        self.assertTrue(ok2, msg2)
+        cfg2 = yaml.safe_load(open(path, encoding="utf-8").read())
+        self.assertEqual(cfg2["device"]["transport"], "sim")
+        self.assertFalse(cfg2["device"]["enabled"])
+
+    def test_appends_missing_sandbox_section(self):
+        import yaml
+
+        import src.config_writer as cw
+
+        path = self._tmp_cfg()
+        with patch.object(cw, "config_path", return_value=path):
+            ok, msg = cw.set_sandbox_mode("docker")
+        self.assertTrue(ok, msg)
+        cfg = yaml.safe_load(open(path, encoding="utf-8").read())
+        self.assertEqual(cfg["sandbox"]["mode"], "docker")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
