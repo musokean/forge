@@ -44,6 +44,7 @@ from contextlib import contextmanager
 # ── 可选依赖：缺失时模块仍可 import（纯逻辑/测试不需要 fastapi）─────────────
 try:
     from fastapi import Depends, FastAPI, Header, HTTPException, Request
+    from fastapi.concurrency import run_in_threadpool
     from fastapi.responses import JSONResponse
 
     HAS_FASTAPI = True
@@ -456,7 +457,7 @@ class ForgeService:
 # ══════════════════════════════════════════════════════════════════
 # FastAPI 应用
 # ══════════════════════════════════════════════════════════════════
-def create_app(cfg=None, service=None, api_keys=None, rate_limit=None, store=None):
+def create_app(cfg=None, service=None, api_keys=None, rate_limit=None, store=None, hub=None):
     """构建 FastAPI 应用（可注入 service/api_keys，便于测试）。"""
     if not HAS_FASTAPI:
         raise RuntimeError(MISSING_DEPS_HINT)
@@ -580,6 +581,89 @@ def create_app(cfg=None, service=None, api_keys=None, rate_limit=None, store=Non
             return JSONResponse(status_code=502,
                                 content={"error": "处理失败", "detail": str(e), "session_id": sid})
 
+
+    # ════════════════════════════════════════════════════════════
+    # #17 客户端执行器：中心侧接口（客户端**只出站**长轮询，反向连接，A25）
+    # ════════════════════════════════════════════════════════════
+    from .executor_hub import ExecutorError, get_hub
+
+    hub = hub if hub is not None else get_hub(cfg if isinstance(cfg, dict) else None)
+    app.state.executor_hub = hub
+
+    def _hub_http(e):
+        """把枢纽的错误码映射成合适的 HTTP 状态码。"""
+        if e.code in ("E_UNKNOWN_DEVICE", "E_OFFLINE"):
+            return 404
+        if e.code in ("E_CAP_DENIED", "E_CAP_UNSUPPORTED", "E_STAGE_READONLY", "E_NEED_APPROVAL"):
+            return 403
+        if e.code == "E_QUEUE_FULL":
+            return 429
+        return 400
+
+    @app.post("/api/executor/register")
+    async def executor_register(request: Request, _ident: str = Depends(auth)):
+        """客户端执行器注册（声明身份与能力）。"""
+        body = await _json_body(request)
+        try:
+            return await run_in_threadpool(hub.register, body)
+        except ExecutorError as e:
+            raise HTTPException(status_code=_hub_http(e), detail=f"{e.code}: {e.message}")
+
+    @app.post("/api/executor/poll")
+    async def executor_poll(request: Request, _ident: str = Depends(auth)):
+        """客户端长轮询领命令（挂起等待，同时充当心跳）。"""
+        body = await _json_body(request)
+        device_id = str(body.get("device_id") or "")
+        try:
+            cmds = await run_in_threadpool(hub.poll, device_id, body.get("wait"), body.get("max_commands") or 1)
+        except ExecutorError as e:
+            raise HTTPException(status_code=_hub_http(e), detail=f"{e.code}: {e.message}")
+        return {"ok": True, "device_id": device_id, "commands": cmds,
+                "server_time": round(time.time(), 3)}
+
+    @app.post("/api/executor/result")
+    async def executor_result(request: Request, _ident: str = Depends(auth)):
+        """客户端回结果（成功/失败 + 输出 + 可选截图）。"""
+        body = await _json_body(request)
+        ok = await run_in_threadpool(hub.submit_result, body.get("device_id"), body.get("seq"),
+                                     body.get("ok"), body.get("output", ""), body.get("error", ""),
+                                     body.get("extra"))
+        if not ok:
+            raise HTTPException(status_code=404, detail="未知 seq（命令可能已超时）")
+        return {"ok": True}
+
+    @app.get("/api/executor/devices")
+    def executor_devices(online_only: int = 0, _ident: str = Depends(auth)):
+        """在线执行器列表 + 枢纽统计。"""
+        return {"devices": hub.devices(only_online=bool(online_only)), "hub": hub.stats()}
+
+    @app.post("/api/executor/command")
+    async def executor_command(request: Request, _ident: str = Depends(auth)):
+        """派一条命令给执行器并等结果（工具与四角色循环都走这里）。"""
+        body = await _json_body(request)
+        try:
+            cmd = await run_in_threadpool(hub.dispatch, str(body.get("device_id") or ""),
+                                          str(body.get("cap") or ""), str(body.get("action") or ""),
+                                          body.get("args") or {}, body.get("timeout"),
+                                          bool(body.get("approved")))
+        except ExecutorError as e:
+            raise HTTPException(status_code=_hub_http(e), detail=f"{e.code}: {e.message}")
+        return {"ok": cmd.ok, "command": cmd.as_dict(), "extra": cmd.extra}
+
+    @app.post("/api/executor/cua")
+    async def executor_cua(request: Request, _ident: str = Depends(auth)):
+        """Computer Use 任务（四角色分离：规划/执行/评估/监督，A25）。"""
+        body = await _json_body(request)
+        from .cua import CuaError, get_cua
+
+        cua = get_cua(cfg if isinstance(cfg, dict) else None, hub=hub)
+        try:
+            res = await cua.run(str(body.get("task") or ""),      # run 是 async（内部把阻塞的 dispatch 放线程）
+                                body.get("device_id"), body.get("max_steps"))
+        except (CuaError, ExecutorError) as e:
+            raise HTTPException(status_code=_hub_http(e) if isinstance(e, ExecutorError) else 400,
+                                detail=str(e))
+        return res.as_dict()
     return app
 
 

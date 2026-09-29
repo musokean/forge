@@ -483,3 +483,149 @@ def device_reset() -> str:
     if dev is None:
         return _dev_unavailable()
     return json.dumps(dev.reset_safety(), ensure_ascii=False)
+
+# ══════════════════════════════════════════════════════════════════
+# #17 客户端执行器（中心大脑 + 分布式手脚，A25）
+# 目标 PC 上跑 `python executor_agent.py --center <地址> --token <KEY>` 即上线；
+# 中心侧策略（能力白名单/分阶段放权/超时）+ 客户端策略（路径 jail/体积/沙箱）双层生效。
+# ══════════════════════════════════════════════════════════════════
+def _hub():
+    from .executor_hub import get_hub
+
+    return get_hub()
+
+
+def _hub_error(e) -> str:
+    return json.dumps({"ok": False, "reason": getattr(e, "message", str(e)),
+                       "code": getattr(e, "code", "E_ERROR")}, ensure_ascii=False)
+
+
+@tool(
+    name="executor_list",
+    description="列出在线的客户端执行器（被控 PC）：设备号 / 操作系统 / 可用能力。远端操作前先看这个",
+    parameters={"type": "object", "properties": {}},
+    read_only=True,
+)
+def executor_list() -> str:
+    """只读：在线执行器清单（#17）。"""
+    try:
+        hub = _hub()
+        return json.dumps({"ok": True, "devices": hub.devices(only_online=True), "hub": hub.stats()},
+                          ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)
+
+
+@tool(
+    name="executor_run",
+    description="在指定被控 PC 上执行一条 shell 命令（写操作）：device 为设备号、command 为命令。命令在该 PC 的沙箱里跑",
+    parameters={"type": "object", "properties": {"device": {"type": "string"}, "command": {"type": "string"}},
+                "required": ["device", "command"]},
+    read_only=False,
+)
+def executor_run(device: str, command: str) -> str:
+    try:
+        cmd = _hub().dispatch(device, "shell", "", {"command": command})
+        return json.dumps({"ok": cmd.ok, "output": cmd.output, "error": cmd.error,
+                           "mode": (cmd.extra or {}).get("mode"), "exit_code": (cmd.extra or {}).get("exit_code"),
+                           "ms": round(((cmd.done_at or cmd.created_at) - cmd.created_at) * 1000, 1)},
+                          ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)
+
+
+@tool(
+    name="executor_file",
+    description="读写被控 PC 上的文件（写操作）：action=read 时用 device+path；action=write 时还要给 content",
+    parameters={"type": "object", "properties": {
+        "device": {"type": "string"}, "action": {"type": "string", "enum": ["read", "write", "list"]},
+        "path": {"type": "string"}, "content": {"type": "string"}},
+        "required": ["device", "action", "path"]},
+    read_only=False,
+)
+def executor_file(device: str, action: str, path: str, content: str = "") -> str:
+    try:
+        hub = _hub()
+        if action == "read":
+            cmd = hub.dispatch(device, "read_file", "", {"path": path})
+            return json.dumps({"ok": cmd.ok, "error": cmd.error, "bytes": (cmd.extra or {}).get("bytes"),
+                               "encoding": (cmd.extra or {}).get("encoding"), "content_b64": cmd.output},
+                              ensure_ascii=False)
+        if action == "list":
+            cmd = hub.dispatch(device, "list_dir", "", {"path": path or "."})
+            return json.dumps({"ok": cmd.ok, "error": cmd.error, "listing": cmd.output}, ensure_ascii=False)
+        cmd = hub.dispatch(device, "write_file", "", {"path": path, "content": content})
+        return json.dumps({"ok": cmd.ok, "error": cmd.error, "output": cmd.output}, ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)
+
+
+@tool(
+    name="executor_screen",
+    description="给被控 PC 截屏（只读）：把 PNG 存到中心机器并返回路径与尺寸；若执行器带 OCR 则一并返回文字",
+    parameters={"type": "object", "properties": {"device": {"type": "string"}, "note": {"type": "string"}}},
+    read_only=True,
+)
+def executor_screen(device: str, note: str = "") -> str:
+    """只读：远端截屏（#17）。图片落在中心机器的 exports/screenshots/。"""
+    import base64 as _b64
+    import time as _time
+
+    try:
+        cmd = _hub().dispatch(device, "screenshot", "", {})
+        if not cmd.ok:
+            return json.dumps({"ok": False, "reason": cmd.error or "截图失败"}, ensure_ascii=False)
+        raw = _b64.b64decode(cmd.output or "")
+        out_dir = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                               "exports", "screenshots")
+        os.makedirs(out_dir, exist_ok=True)
+        path = os.path.join(out_dir, f"{device}-{int(_time.time())}.png")
+        with open(path, "wb") as f:
+            f.write(raw)
+        return json.dumps({"ok": True, "path": path, "bytes": len(raw),
+                           "screen": (cmd.extra or {}).get("screen"),
+                           "ocr_text": (cmd.extra or {}).get("ocr_text", ""),
+                           "note": note}, ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)
+
+
+@tool(
+    name="executor_input",
+    description="在被控 PC 上模拟鼠标键盘（写操作）：action=click/move/type/key/scroll；click 需 x,y，type 需 text，key 用 ctrl+s 形式",
+    parameters={"type": "object", "properties": {
+        "device": {"type": "string"}, "action": {"type": "string", "enum": ["click", "move", "type", "key", "scroll"]},
+        "x": {"type": "integer"}, "y": {"type": "integer"}, "text": {"type": "string"},
+        "keys": {"type": "string"}, "amount": {"type": "integer"}},
+        "required": ["device", "action"]},
+    read_only=False,
+)
+def executor_input(device: str, action: str, x: int = 0, y: int = 0, text: str = "", keys: str = "",
+                   amount: int = 0) -> str:
+    try:
+        cmd = _hub().dispatch(device, "input", action,
+                              {"x": x, "y": y, "text": text, "keys": keys, "amount": amount})
+        return json.dumps({"ok": cmd.ok, "output": cmd.output, "error": cmd.error}, ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)
+
+
+@tool(
+    name="cua_task",
+    description="把一条模糊任务交给 Computer Use 四角色闭环（规划/执行/评估/监督）在被控 PC 上完成（写操作）：device 为设备号、task 为任务描述",
+    parameters={"type": "object", "properties": {"device": {"type": "string"}, "task": {"type": "string"}},
+                "required": ["device", "task"]},
+    read_only=False,
+)
+def cua_task(device: str, task: str) -> str:
+    """四角色分离执行（A25 防幻觉）：规划者拆步 → 执行者出动作 → 评估者看证据判成败 → 监督者兜底重规划。"""
+    try:
+        from .cua import CuaError, get_cua
+
+        try:
+            res = get_cua().run_sync(task, device_id=device)
+        except CuaError as e:
+            return json.dumps({"ok": False, "reason": str(e), "code": "E_CUA"}, ensure_ascii=False)
+        return json.dumps(res.as_dict(), ensure_ascii=False)
+    except Exception as e:
+        return _hub_error(e)

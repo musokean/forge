@@ -149,6 +149,7 @@ def _help_text() -> str:
         "/logs   日志（#7 完整日志）：/logs 状态 · tail [n] 最近 · errors [n] 告警 · path · clear\n"
         "/sandbox 工具沙箱（#4）：/sandbox 状态 · mode <auto|docker|local|off> 改策略 · test <命令> 试跑\n"
         "/device  硬件设备（#16）：/device 状态 · connect [url] · mode <sim|serial|mqtt> [url] · reset · assets · audit\n"
+        "/executor 客户端执行器（#17）：/executor 概览 · list · run <设备> <命令> · cua <设备> <任务> · audit [n]\n"
         "/exit   退出（或直接输 exit / quit）\n",
         "",
         "■ 生成中",
@@ -972,6 +973,97 @@ def _web_command(arg: str) -> None:
 _WEB_INSTANCE = None
 
 
+def _executor_command(arg: str) -> None:
+    """客户端执行器（#17：中心大脑 + 分布式手脚，A25）。
+    /executor                      枢纽概览 + 在线执行器
+    /executor list                 执行器清单（设备号 / OS / 能力 / 在线）
+    /executor run <设备> <命令>     在目标 PC 上执行命令（走它的沙箱）
+    /executor cua <设备> <任务>     四角色闭环：规划→执行→评估→监督
+    /executor audit [n]            命令审计尾部
+    """
+    from src.executor_hub import ExecutorError, get_hub
+
+    arg = (arg or "").strip()
+    parts = arg.split(None, 2)
+    sub = parts[0].lower() if parts else ""
+
+    try:
+        hub = get_hub()
+    except Exception as e:
+        print(paint(f"  ❌ 枢纽初始化失败：{e}", C.RED))
+        return
+
+    if sub == "list":
+        devs = hub.devices()
+        if not devs:
+            print(paint("  （暂无执行器）目标 PC 上跑：python executor_agent.py --center <地址> --token <KEY>", C.SKY_DIM))
+            return
+        for d in devs:
+            mark = "🟢" if d["online"] else "⚪"
+            print(paint(f"    {mark} {d['device_id']} · {d['os'][:28] or '-'} · 能力 {','.join(d['capabilities']) or '无'}"
+                        f" · 已跑 {d['commands_run']} 条 · {d['last_seen_ago']}s 前心跳", C.SKY_DIM))
+        return
+
+    if sub == "run":
+        if len(parts) < 3:
+            print(paint("  用法：/executor run <设备> <命令>", C.SKY))
+            return
+        try:
+            cmd = hub.dispatch(parts[1], "shell", "", {"command": parts[2]})
+        except ExecutorError as e:
+            print(paint(f"  ❌ {e.message}", C.RED))
+            return
+        mark = "✅" if cmd.ok else "⛔"
+        print(paint(f"  {mark} [{cmd.status}] 退出码 {(cmd.extra or {}).get('exit_code')} · "
+                    f"{((cmd.done_at or cmd.created_at) - cmd.created_at) * 1000:.0f}ms · "
+                    f"沙箱 {((cmd.extra or {}).get('mode') or '-')}", C.SKY if cmd.ok else C.RED))
+        for line in (cmd.output or "").splitlines()[:20]:
+            print(paint("     " + line, C.SKY_DIM))
+        if cmd.error:
+            print(paint("     " + cmd.error, C.RED))
+        return
+
+    if sub == "cua":
+        if len(parts) < 3:
+            print(paint("  用法：/executor cua <设备> <任务描述>", C.SKY))
+            return
+        from src.cua import CuaError, get_cua
+
+        device, task = parts[1], parts[2]
+        print(paint(f"  🧠 四角色闭环：{task}", C.SKY))
+        try:
+            res = get_cua().run_sync(task, device_id=device)
+        except CuaError as e:
+            print(paint(f"  ❌ {e}", C.RED))
+            return
+        for s in res.steps:
+            mark = "✅" if s.ok else "⛔"
+            print(paint(f"     {mark} #{s.index} {s.cap}:{s.action} {s.args} — {s.reason[:80]}", C.SKY_DIM))
+        flag = "✅ 完成" if res.ok else "❌ 未完成"
+        print(paint(f"  {flag} · {res.reason[:120]} · 重规划 {res.replans} 次 · {res.ms / 1000:.1f}s", C.SKY if res.ok else C.RED))
+        return
+
+    if sub == "audit":
+        k = int(parts[1]) if (len(parts) > 1 and parts[1].isdigit()) else 10
+        rows = hub.audit(k)
+        if not rows:
+            print(paint("  （暂无命令审计）", C.SKY_DIM))
+            return
+        for e in rows:
+            mark = "✅" if e["ok"] else "⛔"
+            print(paint(f"    {mark} {e['device']} {e['cap']}:{e['action']} {e['args']} · {e['status']} · {e['ms']}ms"
+                        + (f" · {e['error'][:60]}" if e.get("error") else ""), C.SKY_DIM))
+        return
+
+    st = hub.stats()
+    print(paint(f"  🖥 执行器枢纽：阶段 {st['stage']} · 在线 {st['online']}/{st['devices']} 台 · "
+                f"待发 {st['pending']} · 等结果 {st['waiting']}", C.SKY))
+    print(paint(f"     能力白名单 {','.join(st['allow_caps'])} · 长轮询 {st['poll_wait']}s · "
+                f"命令超时 {st['command_timeout']}s", C.SKY_DIM))
+    for d in hub.devices(only_online=True):
+        print(paint(f"     🟢 {d['device_id']} · {','.join(d['capabilities']) or '无能力'}", C.SKY_DIM))
+    if not hub.devices():
+        print(paint("     （暂无执行器）目标 PC 上跑：python executor_agent.py --center 本机地址 --token <KEY>", C.SKY_DIM))
 def _device_command(arg: str) -> None:
     """硬件设备（#16）：Phase 0 模拟器 / Phase 1 真链路（串口 · MQTT）。
     /device                       状态：承载 / 连接 / 设备身份 / 策略 / 最近审计
@@ -1349,6 +1441,9 @@ async def _repl() -> None:
             continue
         if line == "/device" or line.startswith("/device "):
             _device_command(line[8:].strip())
+            continue
+        if line == "/executor" or line.startswith("/executor "):
+            _executor_command(line[10:].strip())
             continue
         if line == "/sandbox" or line.startswith("/sandbox "):
             _sandbox_command(line[8:].strip())

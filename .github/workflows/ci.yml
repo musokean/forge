@@ -53,6 +53,7 @@ jobs:
             test_sandbox_logging.py \
             test_hardware.py \
             test_cli.py \
+            test_executor.py \
             test_approval.py \
             test_knowledge.py \
             test_circuit_breaker.py \

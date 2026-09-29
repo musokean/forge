@@ -24,6 +24,11 @@ device = [
     "pyserial>=3.5",     # 串口/透传（COM5 · socket:// · loop://）
     "paho-mqtt>=2.0",    # MQTT 承载
 ]
+# #17 客户端执行器的 GUI 能力（截屏/鼠标键盘）才需要：不装则该能力如实报不可用（不假装有）
+executor = [
+    "pyautogui>=0.9.54",
+    "pillow>=10.0",
+]
 
 [project.scripts]
 forge = "main:main"

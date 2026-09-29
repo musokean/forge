@@ -209,6 +209,40 @@ device:
     cooldown_s: 1
     allow_remote: false       # 非本机（真·远程）链路默认不可写
 
+# ---- 12) 客户端执行器（#17：中心大脑 + 分布式手脚，A25）----
+# 目标 PC 上跑：python executor_agent.py --center <本机地址> --token <APIKEY> --id pc-01
+# 中心侧接口在服务模式里（forge --serve → /api/executor/register|poll|result|command|cua）
+executor:
+  enabled: true
+  hub:                        # 中心侧策略（在客户端策略之前再拦一道）
+    stage: low_risk           # readonly | low_risk | approval | closed_loop
+    allow_caps: [shell, read_file, write_file, list_dir, screenshot, input]
+    poll_wait: 25             # 长轮询挂起秒数（客户端只出站，反向连接）
+    command_timeout: 30
+    max_result_bytes: 524288
+    stale_seconds: 120        # 多久没心跳算离线
+  client:                     # 装在被控 PC 上的执行器读这段（executor_agent.py）
+    root: ""                  # 路径 jail 根目录（默认 = 执行器启动目录）
+    allow_caps: [shell, read_file, write_file, list_dir, screenshot, input]
+    stage: low_risk
+    max_bytes: 262144
+    deny_patterns: []         # 追加的危险命令模式（shell 走沙箱，另有内置拦截）
+
+# ---- 13) Computer Use 四角色（#17 防幻觉，A25）----
+# 规划者/执行者/评估者/监督者**各自独立调用**，可绑不同模型；评估者只看原始证据
+cua:
+  enabled: true
+  device_id: ""               # 默认第一台在线执行器
+  max_steps: 12
+  max_failures: 2             # 连续失败到这个数 → 交给监督者重规划
+  max_replans: 2
+  screenshot_each_step: true
+  roles:
+    planner: default
+    executor: default
+    evaluator: default
+    supervisor: default
+
 # ====================== 切回云端（DeepSeek）参考 ======================
 # 不想用本地端点时，把上面的 models / roles 换成下面这组即可（debate / router 不用动）：
 # models:

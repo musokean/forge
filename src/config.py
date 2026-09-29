@@ -62,6 +62,21 @@ device:
   serial_url: "socket://127.0.0.1:9009"
   baudrate: 115200
 
+# 客户端执行器（#17）：中心侧策略 + 被控 PC 侧策略；cua 四角色防幻觉
+executor:
+  enabled: true
+  hub:
+    stage: low_risk
+    poll_wait: 25
+  client:
+    root: ""
+    stage: low_risk
+
+cua:
+  enabled: true
+  max_steps: 12
+  max_failures: 2
+
 server:
   host: 127.0.0.1
   port: 8080
