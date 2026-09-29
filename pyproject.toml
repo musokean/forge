@@ -30,11 +30,14 @@ executor = [
     "pillow>=10.0",
 ]
 
+# 控制台入口：pip 装完直接可用（不必 clone 仓库）
 [project.scripts]
 forge = "main:main"
+forge-executor = "executor_agent:main"      # #17 被控 PC 上的客户端执行器
+forge-device-sim = "device_sim:main"        # #16 设备端模拟器（说真协议）
 
 [tool.setuptools]
-py-modules = ["main"]
+py-modules = ["main", "executor_agent", "device_sim"]
 packages = ["src"]
 
 [tool.pytest.ini_options]
