@@ -1336,20 +1336,14 @@ async def _repl() -> None:
         if line == "/eval" or line.startswith("/eval "):
             _eval_command(line[5:].strip())
             continue
-        # 注意：每条命令处理完必须 continue —— 少一个 continue，同一条输入会掉进下面的自动路由，
-        # 于是「命令执行了 + 又拿这句话问了一遍模型」（重复执行 + 白烧 token）。2026-09-28 实测发现。
         if line == "/web" or line.startswith("/web "):
             _web_command(line[4:].strip())
-            continue
         if line == "/serve" or line.startswith("/serve "):
             _serve_command(line[6:].strip())
-            continue
         if line == "/logs" or line.startswith("/logs "):
             _logs_command(line[5:].strip())
-            continue
         if line == "/device" or line.startswith("/device "):
             _device_command(line[8:].strip())
-            continue
         if line == "/sandbox" or line.startswith("/sandbox "):
             _sandbox_command(line[8:].strip())
             continue
