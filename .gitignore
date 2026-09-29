@@ -13,3 +13,7 @@ push_github.cmd
 
 # 本地打包/安装产物
 *.egg-info/
+
+# 本地构建产物（pip install -e . / 打包产生，不进库）
+build/
+dist/

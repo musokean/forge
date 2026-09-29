@@ -35,5 +35,5 @@ packages = ["src"]
 [tool.pytest.ini_options]
 # 本地 `pytest .` 的坑：release/ 是 build_release.py 生成的副本目录，里面有 test_*.py 的同名拷贝，
 # 不排除会报 import file mismatch（CI 用显式白名单不受影响，本地全量跑才炸）
-norecursedirs = ["release", "data", "exports", ".git", "__pycache__", ".workbuddy", "node_modules", "hardware"]
+norecursedirs = ["release", "build", "dist", "data", "exports", ".git", "__pycache__", ".workbuddy", "node_modules", "hardware"]
 testpaths = []
