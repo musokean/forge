@@ -32,6 +32,8 @@ COPY_GLOBS = [
     ".github/**",
     # 硬件（#16）：Phase 0 模拟器 + Phase 1 设备端模拟器 + 固件骨架 + 协议文档
     "fake_device.py", "device_sim.py", "hardware/**", "docs/**",
+    # #17 客户端执行器：被控 PC 上的入口（中心侧代码在 src/ 里）
+    "executor_agent.py",
 ]
 # 明确排除（防误伤）：本地运行残留（scripts/ 单独处理——只放行 build_release.py）
 EXCLUDE_DIRS = {"data", "exports", ".git", "__pycache__", ".workbuddy", "release"}

@@ -70,6 +70,7 @@ forge --serve --port 8080    # 接口文档 http://127.0.0.1:8080/docs
 | `/logs` | 日志（#7）：`/logs` 状态 · `tail [n]` 最近事件 · `errors [n]` 告警 · `path` 目录 · `clear` 清空 |
 | `/sandbox` | 工具沙箱（#4）：`/sandbox` 状态 · `mode <auto\|docker\|local\|off>` 切换策略 · `test <命令>` 试跑看实际路径 |
 | `/device` | 硬件设备（#16）：`/device` 状态 · `connect [url]` · `disconnect` · `mode <sim\|serial\|mqtt> [url]` 切承载 · `reset` 复位过热保护 · `assets` 资产目录 · `audit [n]` 命令审计 |
+| `/executor` | 客户端执行器（#17）：`/executor` 概览 · `list` 在线执行器 · `run <设备> <命令>` 远端执行 · `cua <设备> <任务>` 四角色闭环 · `audit [n]` 命令审计 |
 | `/help` | 查看帮助 |
 | `/exit` | 退出（或直接输 `exit` / `quit`） |
 
@@ -315,10 +316,14 @@ handcraft-agent/
 │   ├── config.py         # 配置加载 + resolve_model（角色/别名解析）
 │   ├── config_writer.py  # 安全写回配置（/config 面板底层）
 │   ├── llm.py            # openai SDK 网关 + 重试 + 降级 + 流式 + 熔断
-│   ├── tools.py          # 14 工具 + @tool 注册 + 只读分级 + 知识库工具
+│   ├── tools.py          # 20 工具 + @tool 注册 + 只读分级 + 知识库工具
 │   ├── hwproto.py        # #16 硬件协议 v1（line-JSON + CRC + seq/ack/state）
 │   ├── hwtransport.py    # #16 承载：串口(pyserial) / MQTT(paho) / 内存
 │   ├── hwcontrol.py      # #16 控制平面：资产目录 + 策略引擎 + 命令状态机
+│   ├── executor_hub.py   # #17 执行器枢纽（注册表 + 策略 + 命令队列）
+│   ├── executor.py       # #17 客户端执行器（能力 + 路径 jail + 长轮询）
+│   ├── cua.py            # #17 四角色 Computer Use 循环（规划/执行/评估/监督）
+│   └── executor_agent.py # #17 被控 PC 上的入口
 │   ├── agent.py          # ReAct 循环 + 上下文管理 + 状态栏 + trace + 审批 + 反思
 │   ├── orchestrator.py   # 并行 / 辩论 / 多模型路由 / supervisor 规划执行
 │   ├── router.py         # 自动路由（单答/并行/规划/辩论 四类判断）
@@ -503,7 +508,42 @@ curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
 
 ---
 
-## 十四、硬件链路（#16 硬件 Phase 1：串口 / MQTT 真链路）
+## 十四、客户端执行器（#17：中心大脑 + 分布式手脚）
+
+让服务器上的 Agent 操控客户端 PC。**复用现成组件**（RustDesk 做远控底座、GUI 自动化做手），
+核心是用**四角色分离**防幻觉（对齐 A25）。
+
+```
+中心（服务器）  executor_hub.py：注册表 + 策略 + 命令状态机 + 审计     ◀──出站长轮询──  被控 PC
+                cua.py：规划者 → 执行者 → 评估者 → 监督者          ──派命令/回结果──▶  executor_agent.py
+                                                                                      shell / 文件 / 截屏 / 输入
+```
+
+**反向连接**：被控 PC **只出站**（HTTP 长轮询，默认挂 25s），不开放任何入站端口，不用改防火墙。
+
+**四角色防幻觉**（A25「别让一个模型又当大脑又当手还当裁判」）：四个角色是**四次独立模型调用**，
+可在 `cua.roles` 各绑不同模型，而且**信息不对称**——评估者**只看原始证据**（命令输出/错误/文件内容），
+看不到执行者的自述理由；再配步数上限 / 连续失败阈值 / 重规划上限 / **计划用尽时的整体完成检查**。
+
+**两层策略 + 审计**：中心侧（能力白名单 + 分阶段放权 `readonly/low_risk/approval/closed_loop`
++ 超时 + 体积上限 + 每命令审计）· 客户端侧（**路径 jail** + 体积上限 + 能力白名单 + `shell` 走本机沙箱）。
+**没装 GUI 依赖就不声明 `screenshot`/`input`**——不假装有这个能力。
+
+```bash
+forge --serve                                   # 中心
+# 被控 PC（每台一个）
+pip install "handcraft-agent[executor]"         # 可选：装了才有截屏/鼠标键盘
+python executor_agent.py --center http://<中心>:8080 --token <KEY> --id pc-01 --root D:/work
+# 中心 REPL
+/executor · /executor list · /executor run pc-01 "whoami" · /executor cua pc-01 "打开记事本输入 hello"
+```
+
+Agent 侧工具：`executor_list` / `executor_run` / `executor_file` / `executor_screen` /
+`executor_input` / `cua_task`。协议、安全与限制见 `docs/executor.md`。
+
+---
+
+## 十五、硬件链路（#16 硬件 Phase 1：串口 / MQTT 真链路）
 
 硬件即工具。`tools.py` 暴露 `device_status` / `device_power` / `device_level` / `device_reset`；
 背后接什么由配置决定：
@@ -544,7 +584,7 @@ python device_sim.py --transport socket --port 9009 --test-hooks
 
 ---
 
-## 十五、测试与压测
+## 十六、测试与压测
 ```bash
 python test_m0.py                    # M0 最小循环验收
 python test_m1.py                    # M1 工程底盘五件套
@@ -572,7 +612,7 @@ python test_interrupt.py             # 生成期打断/引导：poll_key 跨平�
 
 ---
 
-## 十六、设计脉络（模块 → 原理）
+## 十七、设计脉络（模块 → 原理）
 
 每个模块对应一套可讲清的 Agent 原理，方便按图索骥：
 

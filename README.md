@@ -49,6 +49,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **Reliability** | Golden-set regression (`/eval`, keyword-hit + LLM-as-judge), model-failure resilience, endpoint self-check on startup |
 | **UX** | Sky-blue theme, interrupt/redirect generation (Esc / type a steer), auto tasks, Web UI |
 | **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
+| **Client executor (#17)** | Drive remote PCs: a light executor on each machine dials out (long poll, no inbound port) and exposes shell / files / screenshot / GUI input behind two policy layers. A four-role Computer Use loop (planner → executor → evaluator → supervisor) keeps one model from being brain, hand and judge at once |
 | **Hardware (#16)** | Serial / MQTT real link behind a control plane: asset registry, staged policy, command state machine (Created→Sent→Accepted→Applied) with timeout, retries and rollback, plus agent-side temperature/runtime guards. `device_sim.py` speaks the same protocol, so the whole link is testable with no hardware |
 | **Safety (#4)** | Command sandbox: Docker isolation when available (no network, read-only mount, memory/CPU/PID caps, non-root), hardened local fallback, dangerous-command blocking. Host environment is never handed to child processes — a command can no longer read your API keys |
 | **Logging (#7)** | Structured JSONL logs with rotation, retention and **secret redaction**; per-run correlation ids (role/model/steps/tokens/latency); HTTP request log; `/logs` to inspect |
@@ -57,7 +58,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 
 ```
 /reset /usage /trace /kb /export /key /model /config /circuit
-/skill /memory /remember /task /eval /web /serve /logs /sandbox /device /help /exit
+/skill /memory /remember /task /eval /web /serve /logs /sandbox /device /executor /help /exit
 ```
 
 `/key sk-xxx` — paste a key, auto-assigns to the main model. `/config` — guided panel, no YAML hand-editing needed.
@@ -71,7 +72,7 @@ handcraft-agent/
 ├── src/
 │   ├── agent.py          # ReAct loop + context mgmt + status bar + approval
 │   ├── llm.py            # openai gateway + retry + fallback + streaming + breaker
-│   ├── tools.py          # 14 tools + read-only tiers + KB tools
+│   ├── tools.py          # 20 tools + read-only tiers + KB tools
 │   ├── orchestrator.py   # parallel / debate / supervisor
 │   ├── router.py         # rule-first task routing (0ms for common intents)
 │   ├── knowledge.py      # SQLite+FTS5 knowledge base
@@ -82,6 +83,10 @@ handcraft-agent/
 │   ├── hwproto.py        # #16 hardware protocol v1 (line-JSON + CRC + seq/ack/state)
 │   ├── hwtransport.py    # #16 transports: serial (pyserial) / MQTT (paho) / memory
 │   ├── hwcontrol.py      # #16 control plane: assets + policy + command state machine
+│   ├── executor_hub.py   # #17 executor hub (registry + policy + command queue)
+│   ├── executor.py       # #17 client executor (capabilities + path jail + long poll)
+│   ├── cua.py            # #17 four-role Computer Use loop (planner/executor/evaluator/supervisor)
+│   └── executor_agent.py # #17 entry point that runs on the controlled PC
 │   ├── sandbox.py        # #4 command sandbox (Docker isolation / hardened local)
 │   ├── logging_setup.py  # #7 structured JSONL logs (rotation, retention, redaction)
 │   ├── keypress.py       # interrupt/steer during generation
@@ -119,6 +124,35 @@ forge --serve --port 8080                 # or "/serve 8080" inside the REPL
 curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
      -d '{"message": "hello"}' http://127.0.0.1:8080/api/chat
 ```
+
+## Client executor (#17)
+
+Drive other PCs. Each controlled machine runs a light executor that **only dials out** (HTTP long
+poll - no inbound port, no firewall change):
+
+```bash
+# centre
+forge --serve
+
+# controlled PC (one per machine)
+pip install "handcraft-agent[executor]"          # optional: adds screenshot + GUI input
+python executor_agent.py --center http://<centre>:8080 --token <KEY> --id pc-01 --root D:/work
+
+# centre REPL
+/executor                       # hub overview + what is online
+/executor run pc-01 "whoami"     # run a command over there
+/executor cua pc-01 "open notepad and type hello"
+```
+
+Capabilities are declared by the client and filtered twice: at the hub (allow-list, staged release
+`readonly`/`low_risk`/`approval`/`closed_loop`, timeout, size caps) and again on the client (allow-list,
+**path jail**, size caps, and `shell` goes through that machine's own sandbox). Without the GUI extra
+the client simply does not declare screenshot/input instead of pretending.
+
+**Four-role Computer Use.** `cua_task` splits the loop so no single model is brain, hand and judge:
+planner → executor → (dispatch → raw evidence) → evaluator → supervisor on repeated failure. The
+evaluator only sees raw evidence, never the executor's own explanation; a completion gate catches the
+common case where the executor never says "done". See `docs/executor.md`.
 
 ## Hardware (#16)
 
