@@ -1,7 +1,5 @@
 # forge · Forging ideas into action
 
-**A config-driven, multi-model AI agent with a readable codebase — learnable, and production-ready enough to actually use.**
-
 [![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
@@ -51,6 +49,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **Reliability** | Golden-set regression (`/eval`, keyword-hit + LLM-as-judge), model-failure resilience, endpoint self-check on startup |
 | **UX** | Sky-blue theme, interrupt/redirect generation (Esc / type a steer), auto tasks, Web UI |
 | **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
+| **Hardware (#16)** | Serial / MQTT real link behind a control plane: asset registry, staged policy, command state machine (Created→Sent→Accepted→Applied) with timeout, retries and rollback, plus agent-side temperature/runtime guards. `device_sim.py` speaks the same protocol, so the whole link is testable with no hardware |
 | **Safety (#4)** | Command sandbox: Docker isolation when available (no network, read-only mount, memory/CPU/PID caps, non-root), hardened local fallback, dangerous-command blocking. Host environment is never handed to child processes — a command can no longer read your API keys |
 | **Logging (#7)** | Structured JSONL logs with rotation, retention and **secret redaction**; per-run correlation ids (role/model/steps/tokens/latency); HTTP request log; `/logs` to inspect |
 
@@ -58,7 +57,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 
 ```
 /reset /usage /trace /kb /export /key /model /config /circuit
-/skill /memory /remember /task /eval /web /serve /logs /sandbox /help /exit
+/skill /memory /remember /task /eval /web /serve /logs /sandbox /device /help /exit
 ```
 
 `/key sk-xxx` — paste a key, auto-assigns to the main model. `/config` — guided panel, no YAML hand-editing needed.
@@ -72,7 +71,7 @@ handcraft-agent/
 ├── src/
 │   ├── agent.py          # ReAct loop + context mgmt + status bar + approval
 │   ├── llm.py            # openai gateway + retry + fallback + streaming + breaker
-│   ├── tools.py          # 13 tools + read-only tiers + KB tools
+│   ├── tools.py          # 14 tools + read-only tiers + KB tools
 │   ├── orchestrator.py   # parallel / debate / supervisor
 │   ├── router.py         # rule-first task routing (0ms for common intents)
 │   ├── knowledge.py      # SQLite+FTS5 knowledge base
@@ -80,6 +79,9 @@ handcraft-agent/
 │   ├── eval.py           # golden-set evaluation
 │   ├── web.py            # zero-dependency web chat
 │   ├── server.py         # #14 HTTP API service (sessions + auth + rate limit)
+│   ├── hwproto.py        # #16 hardware protocol v1 (line-JSON + CRC + seq/ack/state)
+│   ├── hwtransport.py    # #16 transports: serial (pyserial) / MQTT (paho) / memory
+│   ├── hwcontrol.py      # #16 control plane: assets + policy + command state machine
 │   ├── sandbox.py        # #4 command sandbox (Docker isolation / hardened local)
 │   ├── logging_setup.py  # #7 structured JSONL logs (rotation, retention, redaction)
 │   ├── keypress.py       # interrupt/steer during generation
@@ -117,6 +119,51 @@ forge --serve --port 8080                 # or "/serve 8080" inside the REPL
 curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
      -d '{"message": "hello"}' http://127.0.0.1:8080/api/chat
 ```
+
+## Hardware (#16)
+
+Devices are tools. `tools.py` exposes `device_status` / `device_power` / `device_level` /
+`device_reset`; what sits behind them depends on config:
+
+| `device.enabled` / `transport` | What the tools talk to |
+|---|---|
+| `false` or `sim` (default) | Phase 0 in-process simulator (`fake_device.py`) |
+| `true` + `serial` | real serial / UART (`COM5`, `/dev/ttyUSB0`, or `socket://host:port`) |
+| `true` + `mqtt` | MQTT: down `{prefix}/cmd/{device}`, up `{prefix}/up/{device}` |
+
+**Control plane.** Talking to hardware is easy; not mis-controlling it is the hard part. Before
+a command reaches the wire it passes an asset registry (unknown device aliases are refused, not
+guessed), a policy engine (staged release `readonly` / `low_risk` / `approval` / `closed_loop`,
+level/temperature/runtime limits, write cooldown, remote endpoints unwritable by default) and a
+command state machine:
+
+```
+Created ──sent──> Sent ──ack.ok──> Accepted ──state──> Applied
+                        └─ ack rejected ─> Rejected
+                        └─ timeout, retries exhausted ─> Timeout   (then rollback)
+```
+
+An `ack` only means the device took the request; **only a state snapshot counts as applied**. Every
+command is audited, and the agent side enforces its own over-temperature / runtime guards instead of
+trusting the device alone.
+
+**No hardware needed to verify it.** The device-side simulator speaks the same protocol over TCP:
+
+```bash
+# terminal 1 — simulated device (real protocol, real CRC)
+python device_sim.py --transport socket --port 9009 --test-hooks
+
+# terminal 2
+forge                       # then:
+/device mode serial socket://127.0.0.1:9009
+/device connect
+/device                     # device identity, policy, recent audit
+/device audit 10
+```
+
+That path exercises real pyserial, real framing, real policy, real state machine — only the physical
+component is simulated. `docs/hardware.md` has the protocol spec plus a reference ESP32 firmware
+(`hardware/esp32_beauty_device.ino`) for the real thing.
 
 ## Sandbox and logs
 

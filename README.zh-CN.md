@@ -69,6 +69,7 @@ forge --serve --port 8080    # 接口文档 http://127.0.0.1:8080/docs
 | `/serve` | API 服务（#14 部署）：`/serve` · `/serve 端口` 起 HTTP API（多会话 + 鉴权 + 限流）· `/serve stop` 停止 |
 | `/logs` | 日志（#7）：`/logs` 状态 · `tail [n]` 最近事件 · `errors [n]` 告警 · `path` 目录 · `clear` 清空 |
 | `/sandbox` | 工具沙箱（#4）：`/sandbox` 状态 · `mode <auto\|docker\|local\|off>` 切换策略 · `test <命令>` 试跑看实际路径 |
+| `/device` | 硬件设备（#16）：`/device` 状态 · `connect [url]` · `disconnect` · `mode <sim\|serial\|mqtt> [url]` 切承载 · `reset` 复位过热保护 · `assets` 资产目录 · `audit [n]` 命令审计 |
 | `/help` | 查看帮助 |
 | `/exit` | 退出（或直接输 `exit` / `quit`） |
 
@@ -244,6 +245,30 @@ sandbox:
 
 ---
 
+### ⑪ device —— 硬件链路（#16 硬件 Phase 1）
+
+```yaml
+device:
+  enabled: false             # false = Phase 0 进程内模拟器；true = 走真链路
+  transport: sim             # sim | serial | mqtt
+  device_id: beauty-01
+  serial_url: "socket://127.0.0.1:9009"   # 或 COM5 / /dev/ttyUSB0 / loop://
+  baudrate: 115200
+  timeout: 3                 # 单条命令等待时长
+  retries: 2                 # 超时重试次数
+  monitor: true              # 后台巡检：超温/超时主动断电
+  monitor_interval: 5
+  policy:
+    stage: low_risk          # readonly | low_risk | approval | closed_loop
+    max_level: 3             # 档位上限（越权命令在发出去之前就被拒）
+    max_temp_c: 45           # 温度上限
+    max_runtime_s: 900       # 单次运行时长上限
+    cooldown_s: 1            # 写冷却（防连续猛调）
+    allow_remote: false      # 非本机链路默认不可写
+```
+
+---
+
 ## 五、知识库（索引库即源文档）
 forge 的知识库是**自持的**：知识直接沉淀进库内条目（SQLite + FTS5 全文检索），**不依赖外部源文件**。新用户零配置开箱即用——对话里说「记住这个 / 记到知识库」，forge 自动调 `kb_add` 写入；外部文件导入（ingest/sync）只是可选的补充通道。
 
@@ -290,7 +315,10 @@ handcraft-agent/
 │   ├── config.py         # 配置加载 + resolve_model（角色/别名解析）
 │   ├── config_writer.py  # 安全写回配置（/config 面板底层）
 │   ├── llm.py            # openai SDK 网关 + 重试 + 降级 + 流式 + 熔断
-│   ├── tools.py          # 13 工具 + @tool 注册 + 只读分级 + 知识库工具
+│   ├── tools.py          # 14 工具 + @tool 注册 + 只读分级 + 知识库工具
+│   ├── hwproto.py        # #16 硬件协议 v1（line-JSON + CRC + seq/ack/state）
+│   ├── hwtransport.py    # #16 承载：串口(pyserial) / MQTT(paho) / 内存
+│   ├── hwcontrol.py      # #16 控制平面：资产目录 + 策略引擎 + 命令状态机
 │   ├── agent.py          # ReAct 循环 + 上下文管理 + 状态栏 + trace + 审批 + 反思
 │   ├── orchestrator.py   # 并行 / 辩论 / 多模型路由 / supervisor 规划执行
 │   ├── router.py         # 自动路由（单答/并行/规划/辩论 四类判断）
@@ -442,7 +470,7 @@ curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
 
 ---
 
-## 十四、沙箱与日志（#4 / #7）
+## 十三、沙箱与日志（#4 / #7）
 
 ### 一、工具安全沙箱（#4）
 
@@ -472,6 +500,47 @@ curl -H "Authorization: Bearer $KEY" -H "Content-Type: application/json" \
 - **轮转与保留**：按天分文件，单文件超 `logging.max_mb` 切分，超 `logging.keep_days` 自动清理。
 - **脱敏**：字段名含 `key`/`token`/`secret`/`authorization` 的值、以及 `sk-…` / `Bearer …` / `gho_…` 形态的字符串，一律写 `***`——**部署后的日志不能泄漏密钥**。
 - **查看**：`/logs`（状态）· `/logs tail 20`（最近事件）· `/logs errors`（告警以上）· `/logs path` · `/logs clear`。
+
+---
+
+## 十四、硬件链路（#16 硬件 Phase 1：串口 / MQTT 真链路）
+
+硬件即工具。`tools.py` 暴露 `device_status` / `device_power` / `device_level` / `device_reset`；
+背后接什么由配置决定：
+
+| `device.enabled` / `transport` | 工具实际连到 |
+|---|---|
+| `false` 或 `sim`（默认） | Phase 0 进程内模拟器（`fake_device.py`） |
+| `true` + `serial` | 真串口 / UART（`COM5`、`/dev/ttyUSB0`，或 `socket://host:port` 透传） |
+| `true` + `mqtt` | MQTT：下行 `{prefix}/cmd/{device}`，上行 `{prefix}/up/{device}` |
+
+**控制平面**（生产级的真正难点）：命令上线前要过三道——**资产目录**（未知别名一律拒绝，不猜）、
+**策略引擎**（分阶段放权 `readonly`/`low_risk`/`approval`/`closed_loop` + 档位/温度/时长限额 +
+写冷却 + 远程默认禁写）、**命令状态机**：
+
+```
+Created ──发送──> Sent ──ack.ok──> Accepted ──state──> Applied
+                       └─ ack 拒绝 ─> Rejected
+                       └─ 超时重试用尽 ─> Timeout（随后回滚）
+```
+
+`ack` 只代表设备**接下**了请求；**只有 `state` 快照才算生效**。每条命令都有审计，且 Agent 侧
+自己也执行超温/超时断电守卫（不只依赖设备端保护）。
+
+**没有硬件也能验真链路**（设备端模拟器说同一套协议，走 TCP 透传）：
+
+```bash
+# 终端 1：模拟设备端
+python device_sim.py --transport socket --port 9009 --test-hooks
+# 终端 2：forge 里
+/device mode serial socket://127.0.0.1:9009
+/device connect
+/device                 # 设备身份 / 策略 / 最近审计
+/device audit 10
+```
+
+这条路走的是真 pyserial + 真帧格式 + 真策略 + 真状态机，只差物理器件。协议规范与真机固件骨架见
+`docs/hardware.md` 与 `hardware/esp32_beauty_device.ino`。
 
 ---
 
