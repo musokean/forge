@@ -1350,15 +1350,24 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
             print("   （外放时它说话你也能插话：麦克风里的回声会被减掉，不用闭麦也不用按键）")
     else:
         sink_obj = NullSink() if sink == "null" else FFplaySink()
-    mode = "按住空格说话（PTT）" if ptt else ("半双工（播放时闭麦）" if half_duplex else "全双工（建议戴耳机）")
+    if ptt:
+        mode = "按住空格说话（PTT）"
+    elif half_duplex:
+        mode = "半双工（播放时闭麦）"
+    elif aec_engine is not None:
+        mode = "全双工 + AEC 回声消除（外放免耳机，不用按键）"
+    else:
+        mode = "全双工（建议戴耳机）"
     print(f"🔊 语音模式（Phase 2/3 流式 + 打断）· 音频源 {audio_source} · 播放 {sink} · "
           f"抢话阈值 {barge_ms}ms · {mode}")
     if ptt:
         print("   （不按不采集；**按住空格**说话、松开提交；按下即打断它正在说的。说「退出」结束）")
     elif half_duplex:
         print("   （外放模式：它说话时不听麦，防自激；它思考时插话仍可打断。说「退出」结束）")
+    elif aec_engine is not None:
+        print("   （说「退出」/「exit」结束；**它说话时你直接开口就能插话**。消得不够就调 --aec-lead-ms 或降音量）")
     else:
-        print("   （说「退出」/「exit」结束；说话时可直接插话打断；外放请加 --half-duplex 或 --ptt）")
+        print("   （说「退出」/「exit」结束；说话时可直接插话打断；外放请加 --half-duplex / --ptt / --aec）")
     return asyncio.run(streaming_voice_loop(agent, stt, tts, source=src, sink=sink_obj,
                                              max_rounds=rounds, barge_ms=barge_ms,
                                              half_duplex=half_duplex,
