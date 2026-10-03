@@ -1,0 +1,5 @@
+你 · 15:14
+帮我算 (3+5)*2，然后用一句话说明你怎么算的
+---
+forge · 15:14
+⚠ 模型调用失败（端点 https://api.deepseek.com/v1）：Error code: 401 - {'error': {'message': 'Authentication Fails, Your api key: **▊

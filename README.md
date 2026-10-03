@@ -50,6 +50,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **UX** | Sky-blue theme, interrupt/redirect generation (Esc / type a steer), auto tasks, Web UI |
 | **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
 | **Client executor (#17)** | Drive remote PCs: a light executor on each machine dials out (long poll, no inbound port) and exposes shell / files / screenshot / GUI input behind two policy layers. A four-role Computer Use loop (planner → executor → evaluator → supervisor) keeps one model from being brain, hand and judge at once |
+| **Voice (#11)** | Cascade voice pipeline with streaming transcription, sentence-level synthesis and barge-in; audio source and playback are injectable, so the whole mechanism is tested in CI without a microphone or a sound |
 | **Hardware (#16)** | Serial / MQTT real link behind a control plane: asset registry, staged policy, command state machine (Created→Sent→Accepted→Applied) with timeout, retries and rollback, plus agent-side temperature/runtime guards. `device_sim.py` speaks the same protocol, so the whole link is testable with no hardware |
 | **Safety (#4)** | Command sandbox: Docker isolation when available (no network, read-only mount, memory/CPU/PID caps, non-root), hardened local fallback, dangerous-command blocking. Host environment is never handed to child processes — a command can no longer read your API keys |
 | **Logging (#7)** | Structured JSONL logs with rotation, retention and **secret redaction**; per-run correlation ids (role/model/steps/tokens/latency); HTTP request log; `/logs` to inspect |
@@ -198,6 +199,31 @@ forge                       # then:
 That path exercises real pyserial, real framing, real policy, real state machine — only the physical
 component is simulated. `docs/hardware.md` has the protocol spec plus a reference ESP32 firmware
 (`hardware/esp32_beauty_device.ino`) for the real thing.
+
+## Voice (#11)
+
+Talk to forge. Cascade pipeline (STT → agent → TTS) with **streaming and barge-in**:
+
+```bash
+pip install "handcraft-agent[voice]"      # sounddevice + numpy + edge-tts + openai-whisper
+forge --voice                              # talk, and interrupt it mid-answer
+```
+
+- **Streaming (Phase 2)** — while you speak the captured audio is re-transcribed every second and
+  the draft appears before you finish; the answer is split into sentences as it generates, and each
+  finished sentence is synthesised and played immediately, so you hear sentence one while sentence
+  two is still being written
+- **Barge-in (Phase 3)** — the microphone keeps listening while forge thinks and talks. Start
+  speaking and it stops mid-sentence, cancels the running generation and takes the half-sentence you
+  already said as the next turn — no repeating yourself
+- **Testable by design** — audio source and playback are injectable (real microphone / an audio file
+  standing in for one / scripted synthetic audio; real ffplay or a recorder that makes no sound), and
+  VAD + sentence splitting are pure state machines. So segmentation, interruption timing and
+  streaming order are covered in CI: no microphone, no model, no sound
+- **No microphone needed to try it**: `forge --voice --audio-source file:question.wav --voice-sink null`
+  runs the whole chain (real Whisper, real model, real edge-tts) silently
+- Headphones are required for real use: with speakers, the TTS bleeds back into the microphone and
+  gets treated as a new instruction. Details and limits: `docs/voice.md`
 
 ## Sandbox and logs
 

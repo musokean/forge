@@ -584,7 +584,39 @@ python device_sim.py --transport socket --port 9009 --test-hooks
 
 ---
 
-## 十六、测试与压测
+## 十六、语音交互（#11：Phase 2 流式 + Phase 3 打断）
+
+```
+麦克风 ─▶ VAD 分段 ─▶ STT（边说边出草稿）─▶ Agent（边生成边切句）─▶ TTS 逐句合成 ─▶ 播放
+   ▲                                                                              │
+   └──────────────── 播放/生成期间仍在听：插话即打断 ◀──────────────────────────────┘
+```
+
+```bash
+pip install "handcraft-agent[voice]"     # sounddevice / numpy / edge-tts / openai-whisper
+forge --voice                             # 说话，并在它回答时直接插话
+```
+
+- **Phase 2 流式**：说话期间每秒左右重转一次，**草稿在你没说完时就出来**；回答边生成边切句，
+  **合成一句就播一句**——首句出声不再等整段答案（真机实测：一次回答切 3 句、按序播放）
+- **Phase 3 打断**：它思考/说话时麦克风**仍在听**；你一开口 → **立刻停播 + 取消当前生成 +
+  已说的半句直接进下一轮**（不用再说一遍）；插话发生在**播放期间**同样能打断
+- **可测性是设计出来的**：麦克风与播放器**可注入**（真麦克风 / 音频文件当麦克风 / 脚本化合成音频；
+  真 ffplay 或**只记录不发声**的假播放器），VAD 与切句是**纯状态机** →
+  「分段边界 / 打断时序 / 流式顺序」都在 CI 里确定性跑，**不需要麦克风、模型、出声**
+- **没麦克风也能试**：`forge --voice --audio-source file:问句.wav --voice-sink null --voice-rounds 1`
+  能静音跑完真 whisper + 真模型 + 真 edge-tts 全链路
+- **真用必须戴耳机**：外放时 TTS 会被麦克风收回去当成新指令（自激）。参数、测试阶梯与已知限制见 `docs/voice.md`
+
+| 参数 | 作用 |
+|---|---|
+| `--audio-source mic\|file:PATH` | 音频来源；`file:` = 文件当麦克风（无需硬件） |
+| `--voice-rounds N` / `--voice-loop` | 跑几轮就退出 / 文件源循环（多轮回归） |
+| `--voice-sink speaker\|null` | 真播放 / 只走流程不出声 |
+| `--barge-ms N` | 连续说话多久算插话（默认 300ms） |
+| `--stt-model NAME` / `--voice-phase1` | whisper 模型大小 / 退回整句级老链路 |
+
+## 十七、测试与压测
 ```bash
 python test_m0.py                    # M0 最小循环验收
 python test_m1.py                    # M1 工程底盘五件套
@@ -612,7 +644,7 @@ python test_interrupt.py             # 生成期打断/引导：poll_key 跨平�
 
 ---
 
-## 十七、设计脉络（模块 → 原理）
+## 十八、设计脉络（模块 → 原理）
 
 每个模块对应一套可讲清的 Agent 原理，方便按图索骥：
 
