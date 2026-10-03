@@ -18,7 +18,7 @@ golden:
     min_score: 6
 
   - task: '列出当前工作目录下的文件和子目录。'
-    keywords: ['main.py', 'src']
+    keywords: ['main.py', 'forge']
     min_score: 6
 
   - task: '用一句话介绍 forge 是什么。'

@@ -17,7 +17,7 @@ from unittest.mock import patch
 sys.path.insert(0, ".")
 
 import main as cli                                     # noqa: E402
-from src.logging_setup import init_logger, reset_logger  # noqa: E402
+from forge.logging_setup import init_logger, reset_logger  # noqa: E402
 
 
 def _run(fn, *a):
@@ -67,20 +67,20 @@ class TestCliCommands(unittest.TestCase):
     def test_device_command_in_sim_mode(self):
         """Phase 0（默认 sim）：/device 打印模拟器状态，不报错。"""
         cfg = {"device": {"enabled": False, "transport": "sim"}}
-        with patch("src.config.load_config", return_value=cfg):
+        with patch("forge.config.load_config", return_value=cfg):
             out = _run(cli._device_command, "")
         self.assertIn("Phase 0", out)
         self.assertIn("temperature_c", out)
 
     def test_device_command_usage_hint(self):
         cfg = {"device": {"enabled": False, "transport": "sim"}}
-        with patch("src.config.load_config", return_value=cfg):
+        with patch("forge.config.load_config", return_value=cfg):
             out = _run(cli._device_command, "乱输入")
         self.assertIn("用法", out)
 
     def test_device_mode_writes_config(self):
         """`/device mode serial <url>` 要写回配置（老配置缺段时自愈补段）。"""
-        import src.config_writer as cw
+        import forge.config_writer as cw
 
         path = os.path.join(self.tmp, "models.yaml")
         with open(path, "w", encoding="utf-8") as f:
@@ -94,7 +94,7 @@ class TestCliCommands(unittest.TestCase):
         self.assertIn('serial_url: "socket://127.0.0.1:9009"', text)
 
     def test_logs_command_status_and_tail(self):
-        from src.logging_setup import get_logger
+        from forge.logging_setup import get_logger
 
         get_logger().info("cli_test_event", k=1)
         out = _run(cli._logs_command, "")
@@ -105,14 +105,14 @@ class TestCliCommands(unittest.TestCase):
         self.assertIn(self.tmp, out3)
 
     def test_sandbox_command_status_and_test(self):
-        with patch("src.config.load_config", return_value={"sandbox": {"mode": "local"}}):
+        with patch("forge.config.load_config", return_value={"sandbox": {"mode": "local"}}):
             out = _run(cli._sandbox_command, "")
             self.assertIn("沙箱", out)
             out2 = _run(cli._sandbox_command, "test echo cli-sandbox-ok")
         self.assertIn("cli-sandbox-ok", out2)
 
     def test_sandbox_dangerous_command_blocked_via_cli(self):
-        with patch("src.config.load_config", return_value={"sandbox": {"mode": "local"}}):
+        with patch("forge.config.load_config", return_value={"sandbox": {"mode": "local"}}):
             out = _run(cli._sandbox_command, "test rm -rf /")
         self.assertIn("⛔", out)
 

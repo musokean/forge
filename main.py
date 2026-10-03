@@ -13,13 +13,13 @@ import os
 import sys
 import time
 
-from src.agent import Agent
-from src.orchestrator import debate, run_parallel, get_debate_roles
-from src.router import route
-from src.config import load_config, resolve_model
-from src.tools import _get_kb, reset_kb
-from src.tasks import get_scheduler
-from src.config_writer import (
+from forge.agent import Agent
+from forge.orchestrator import debate, run_parallel, get_debate_roles
+from forge.router import route
+from forge.config import load_config, resolve_model
+from forge.tools import _get_kb, reset_kb
+from forge.tasks import get_scheduler
+from forge.config_writer import (
     available_model_aliases,
     available_roles,
     config_path,
@@ -31,7 +31,7 @@ from src.config_writer import (
     set_router_role,
     setup_debate_defaults,
 )
-from src.console import C, paint, rule, full_rule, display_width, pad_display
+from forge.console import C, paint, rule, full_rule, display_width, pad_display
 
 NAME = "forge"  # 命令名（想改名字：改这里 + pyproject.toml 的 [project.scripts]）
 # ============ ASCII 大字（ANSI Shadow 风格）============
@@ -486,7 +486,7 @@ async def _probe_endpoint(cfg, role="default", timeout=5.0) -> tuple:
 
     返回 (ok: bool, detail: str)。直连 _call_role 不走降级链——探测的是 default 本身。
     """
-    from src.llm import _call_role
+    from forge.llm import _call_role
     m = resolve_model(cfg, role)
     try:
         resp = await asyncio.wait_for(
@@ -650,7 +650,7 @@ def _circuit_command(arg: str) -> None:
       /circuit reset        复位全部熔断
       /circuit reset <角色>  复位指定角色（如 /circuit reset default）
     """
-    from src.circuit import get_circuit_registry
+    from forge.circuit import get_circuit_registry
     reg = get_circuit_registry(load_config())
     _y = getattr(C, "YELLOW", C.SKY_DIM)
     parts = arg.split()
@@ -684,7 +684,7 @@ def _skill_command(arg: str, agent: Agent) -> None:
       /skill on <名称>    激活技能（提示词片段+工具白名单注入）
       /skill off <名称>   停用技能
     """
-    from src.skills import list_skills, activate, deactivate, skill_status_line
+    from forge.skills import list_skills, activate, deactivate, skill_status_line
     parts = arg.split()
     if parts and parts[0] == "on" and len(parts) >= 2:
         try:
@@ -722,7 +722,7 @@ def _task_command(arg: str) -> None:
       /task clear                      清空执行记录
     调度示例：每2小时 / 每30分钟 / 每天09:00 / once 2026-08-20T14:00
     """
-    from src.tasks import get_scheduler
+    from forge.tasks import get_scheduler
     sched = get_scheduler()
     parts = arg.split()
     sub = parts[0] if parts else ""
@@ -780,7 +780,7 @@ def _memory_command(arg: str) -> None:
     """长期记忆管理：/memory list · forget <关键词> · clear · stats（跨会话用户画像）。
     /remember <内容> 显式记一条。
     """
-    from src.memory import get_memory
+    from forge.memory import get_memory
     m = get_memory()
     parts = arg.split()
     if parts and parts[0] == "forget" and len(parts) >= 2:
@@ -813,7 +813,7 @@ def _eval_command(arg: str) -> None:
       /eval <序号>       只跑第 N 个用例
       /eval export       把最近一次回归结果导出为 Markdown（exports/eval/）
     """
-    from src.eval import Evaluator
+    from forge.eval import Evaluator
     global _EVAL_LAST_REPORT
     ev = Evaluator()
     parts = arg.split()
@@ -888,14 +888,14 @@ _EVAL_LAST_REPORT = None
 async def _handle_line(agent: Agent, cfg, line: str) -> None:
     """处理一行普通输入：自动路由 → 并行 / 辩论 / 直答。异常由 _repl 兜底（不崩）。"""
     # 长期记忆双钩子：先自动沉淀（「我喜欢/我是…」模式），再召回相关记忆注入上下文
-    from src.memory import get_memory
+    from forge.memory import get_memory
     mem = get_memory()
     mem.auto_remember(line)
     mem_ctx = mem.compose_context(line)
     if mem_ctx:
         line = mem_ctx + "\n\n用户问题：" + line
-    from src.router import _rule_route, route
-    from src.spinner import spinner_start, spinner_stop
+    from forge.router import _rule_route, route
+    from forge.spinner import spinner_start, spinner_stop
     # 规则预判命中：0ms 秒回，不显示 spinner（2026-08-20：规则命中还闪「判断任务类型」很烦）
     decision = _rule_route(line)
     if decision is None:
@@ -914,7 +914,7 @@ async def _handle_line(agent: Agent, cfg, line: str) -> None:
         print(full_rule())
         return
     if decision["type"] == "debate":
-        from src.orchestrator import get_debate_roles
+        from forge.orchestrator import get_debate_roles
         dr, _ = get_debate_roles(cfg)
         if not dr:
             # 辩论阵容未配置：提示并降级普通直答（2026-08-20：辩论默认不配，有需要再配）
@@ -932,7 +932,7 @@ async def _handle_line(agent: Agent, cfg, line: str) -> None:
         print(full_rule())
         return
     if decision["type"] == "plan":
-        from src.orchestrator import run_supervised
+        from forge.orchestrator import run_supervised
         ans = await run_supervised(line)  # planner 拆解 → 并行执行 → merger 合并
         print(ans)
         print(full_rule())
@@ -963,7 +963,7 @@ def _web_command(arg: str) -> None:
     if _WEB_INSTANCE:
         print(paint(f"  Web 已在运行：{_WEB_INSTANCE.url}", C.SKY_DIM))
         return
-    from src.web import ForgeWeb
+    from forge.web import ForgeWeb
     _WEB_INSTANCE = ForgeWeb(auto_open=False)
     _WEB_INSTANCE.start()
     print(paint(f"  （浏览器访问 {_WEB_INSTANCE.url}；/web stop 停止）", C.SKY_DIM))
@@ -981,7 +981,7 @@ def _executor_command(arg: str) -> None:
     /executor cua <设备> <任务>     四角色闭环：规划→执行→评估→监督
     /executor audit [n]            命令审计尾部
     """
-    from src.executor_hub import ExecutorError, get_hub
+    from forge.executor_hub import ExecutorError, get_hub
 
     arg = (arg or "").strip()
     parts = arg.split(None, 2)
@@ -1027,7 +1027,7 @@ def _executor_command(arg: str) -> None:
         if len(parts) < 3:
             print(paint("  用法：/executor cua <设备> <任务描述>", C.SKY))
             return
-        from src.cua import CuaError, get_cua
+        from forge.cua import CuaError, get_cua
 
         device, task = parts[1], parts[2]
         print(paint(f"  🧠 四角色闭环：{task}", C.SKY))
@@ -1074,7 +1074,7 @@ def _device_command(arg: str) -> None:
     /device assets                资产目录（别名 → 设备）
     /device audit [n]             命令审计尾部
     """
-    from src.config import load_config
+    from forge.config import load_config
 
     arg = (arg or "").strip()
     parts = arg.split(None, 2)
@@ -1084,7 +1084,7 @@ def _device_command(arg: str) -> None:
         if len(parts) < 2:
             print(paint("  用法：/device mode <sim|serial|mqtt> [url]", C.SKY))
             return
-        from src.config_writer import set_device_transport
+        from forge.config_writer import set_device_transport
 
         url = parts[2].strip() if len(parts) > 2 else None
         ok, msg = set_device_transport(parts[1], url)
@@ -1122,11 +1122,11 @@ def _device_command(arg: str) -> None:
         return
 
     # ---- Phase 1：真链路 ----
-    from src.hwcontrol import HardwareError, get_link, reset_link
+    from forge.hwcontrol import HardwareError, get_link, reset_link
 
     url = parts[1].strip() if (sub == "connect" and len(parts) > 1) else ""
     if url and not url.lower().startswith("mqtt"):
-        from src.config_writer import set_device_transport
+        from forge.config_writer import set_device_transport
 
         set_device_transport("serial", url)          # 顺带写回配置，下次启动直接生效
         reset_link()
@@ -1200,7 +1200,7 @@ def _logs_command(arg: str) -> None:
     /logs path            日志目录绝对路径
     /logs clear           清空日志文件
     """
-    from src.logging_setup import get_logger
+    from forge.logging_setup import get_logger
 
     log = get_logger()
     arg = (arg or "").strip()
@@ -1250,14 +1250,14 @@ def _sandbox_command(arg: str) -> None:
     /sandbox mode <auto|docker|local|off>   改策略（写回配置，立即生效）
     /sandbox test <命令>        跑一条命令看实际走哪条路径
     """
-    from src.sandbox import get_sandbox
+    from forge.sandbox import get_sandbox
 
     arg = (arg or "").strip()
     parts = arg.split(None, 2)
     sub = parts[0].lower() if parts else ""
 
     if sub == "mode" and len(parts) >= 2:
-        from src.config_writer import set_sandbox_mode
+        from forge.config_writer import set_sandbox_mode
 
         ok, msg = set_sandbox_mode(parts[1])
         print(paint(("  ✅ " if ok else "  ❌ ") + msg, C.SKY if ok else C.RED))
@@ -1308,8 +1308,8 @@ def _serve_command(arg: str) -> None:
             print(paint("  ⚠ 端口要是个数字，例如 /serve 8080", C.SKY))
             return
     try:
-        from src.config import load_config
-        from src.server import resolve_api_keys, start_background
+        from forge.config import load_config
+        from forge.server import resolve_api_keys, start_background
 
         server, url = start_background(port=port)
     except RuntimeError as e:          # 未装可选依赖 / 端口被占用
@@ -1418,7 +1418,7 @@ async def _repl() -> None:
             _memory_command(line[7:].strip())
             continue
         if line == "/remember" or line.startswith("/remember "):
-            from src.memory import get_memory
+            from forge.memory import get_memory
             ok, msg = get_memory().remember(line[9:].strip())
             _ok(ok, msg)
             continue
@@ -1482,7 +1482,7 @@ def main() -> None:
         _phase1 = "--voice-phase1" in sys.argv
         # Phase 2/3 要**流式**跑：模型的增量文本正是「边生成边切句边合成」的输入（2026-09-29 修）
         agent = Agent(stream=not _phase1, show_spinner=False)
-        from src.voice import run_voice
+        from forge.voice import run_voice
 
         run_voice(agent,
                   audio_source=_opt("--audio-source", "mic"),
@@ -1500,7 +1500,7 @@ def main() -> None:
                 port = int(sys.argv[sys.argv.index("--port") + 1])
             except (ValueError, IndexError):
                 pass
-        from src.web import start_web
+        from forge.web import start_web
         web = start_web(port=port)
         try:
             while True:
@@ -1523,7 +1523,7 @@ def main() -> None:
             except (ValueError, IndexError):
                 pass
         try:
-            from src.server import serve
+            from forge.server import serve
 
             serve(host=host, port=port)
         except RuntimeError as e:      # 未装可选依赖

@@ -1,7 +1,7 @@
 """美容仪**设备端**模拟器（硬件 Phase 1：说真协议，不是直调 Python 方法）。
 
 Phase 0 的 `fake_device.py` 是「进程内直调方法」；本文件是**设备端固件的行为替身**：
-它跑 `src/hwproto.py` 的协议（line-JSON + CRC + seq/ack/state），因此 Agent 侧走的是
+它跑 `forge/hwproto.py` 的协议（line-JSON + CRC + seq/ack/state），因此 Agent 侧走的是
 **真正的传输 + 协议 + 控制平面**，只是最后的物理器件是模拟的。固件骨架见
 `hardware/esp32_beauty_device.ino`（同一套协议，换成真继电器/传感器即可）。
 
@@ -39,7 +39,7 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 from fake_device import BeautyDevice                       # noqa: E402  物理模型（Phase 0 复用）
-from src import hwproto as P                                # noqa: E402  真协议
+from forge import hwproto as P                                # noqa: E402  真协议
 
 DEFAULT_CAPABILITIES = ["status", "power_on", "power_off", "set_level", "reset_safety"]
 TEST_CAPABILITIES = ["sim_set_temp", "sim_trip", "sim_heat"]
@@ -278,7 +278,7 @@ def serve_socket(sim: DeviceSimulator, port=9009, host="127.0.0.1", duration=Non
 
 def serve_serial(sim: DeviceSimulator, url, baudrate=115200, duration=None):
     """真串口（COM5 / /dev/ttyUSB0 / loop://）。"""
-    from src.hwtransport import SerialTransport
+    from forge.hwtransport import SerialTransport
 
     tr = SerialTransport(url, baudrate=baudrate, timeout=0.3).open()
     print(f"  [device] 串口已打开 {url} @ {baudrate}", flush=True)

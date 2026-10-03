@@ -11,7 +11,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, ".")
 
-from src.router import route, _rule_route, ROUTE_TIMEOUT
+from forge.router import route, _rule_route, ROUTE_TIMEOUT
 
 
 class TestRuleRoute(unittest.TestCase):
@@ -53,7 +53,7 @@ class TestModelFallback(unittest.TestCase):
     """规则未命中时走模型兜底。"""
 
     def test_unknown_question_uses_model(self):
-        with patch("src.router._call_role") as mock_call:
+        with patch("forge.router._call_role") as mock_call:
             mock_call.return_value = SimpleNamespace(choices=[
                 SimpleNamespace(message=SimpleNamespace(content='{"type": "single", "subtasks": [], "question": "q"}'))
             ])
@@ -62,7 +62,7 @@ class TestModelFallback(unittest.TestCase):
         mock_call.assert_called_once()
 
     def test_model_debate(self):
-        with patch("src.router._call_role") as mock_call:
+        with patch("forge.router._call_role") as mock_call:
             mock_call.return_value = SimpleNamespace(choices=[
                 SimpleNamespace(message=SimpleNamespace(content='{"type": "debate", "question": "要不要外包"}'))
             ])
@@ -71,7 +71,7 @@ class TestModelFallback(unittest.TestCase):
         self.assertEqual(d["question"], "要不要外包")
 
     def test_model_bad_json_falls_back_single(self):
-        with patch("src.router._call_role") as mock_call:
+        with patch("forge.router._call_role") as mock_call:
             mock_call.return_value = SimpleNamespace(choices=[
                 SimpleNamespace(message=SimpleNamespace(content="不是 JSON"))
             ])
@@ -79,7 +79,7 @@ class TestModelFallback(unittest.TestCase):
         self.assertEqual(d["type"], "single")
 
     def test_model_exception_falls_back_single(self):
-        with patch("src.router._call_role", side_effect=RuntimeError("boom")):
+        with patch("forge.router._call_role", side_effect=RuntimeError("boom")):
             d = asyncio.run(route("帮我分析一下这个数据文件里的异常值", {"router": {"role": "default"}}))
         self.assertEqual(d["type"], "single")
 
@@ -87,7 +87,7 @@ class TestModelFallback(unittest.TestCase):
         """模型挂起超过 ROUTE_TIMEOUT → 降级 single（不再卡死）。"""
         async def slow(*a, **k):
             await asyncio.sleep(999)
-        with patch("src.router._call_role", new=slow):
+        with patch("forge.router._call_role", new=slow):
             d = asyncio.run(route("帮我分析一下这个数据文件里的异常值", {"router": {"role": "default"}}))
         self.assertEqual(d["type"], "single")
 
@@ -95,7 +95,7 @@ class TestModelFallback(unittest.TestCase):
         """路由判断超时必须短（≤6s，不阻塞用户）。"""
         async def slow(*a, **k):
             await asyncio.sleep(999)
-        with patch("src.router._call_role", new=slow):
+        with patch("forge.router._call_role", new=slow):
             import time
             t0 = time.monotonic()
             asyncio.run(route("帮我分析一下这个数据文件里的异常值", {"router": {"role": "default"}}))
@@ -108,13 +108,13 @@ class TestRouteGreetingNoModel(unittest.TestCase):
     """关键回归：问候语绝不调模型（反馈「你好也卡」）。"""
 
     def test_greeting_skips_model(self):
-        with patch("src.router._call_role") as mock_call:
+        with patch("forge.router._call_role") as mock_call:
             d = asyncio.run(route("你好", {}))
         self.assertEqual(d["type"], "single")
         mock_call.assert_not_called()  # 规则命中，模型零调用
 
     def test_common_questions_skip_model(self):
-        with patch("src.router._call_role") as mock_call:
+        with patch("forge.router._call_role") as mock_call:
             d = asyncio.run(route("今天天气怎么样", {}))
         self.assertEqual(d["type"], "single")
         mock_call.assert_not_called()

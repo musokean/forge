@@ -19,10 +19,10 @@ from unittest.mock import patch
 
 sys.path.insert(0, ".")
 
-import src.logging_setup as logging_setup  # noqa: E402
-import src.sandbox as sb  # noqa: E402
-from src.logging_setup import Logger, get_logger, init_logger, log_event, redact, reset_logger  # noqa: E402
-from src.sandbox import (  # noqa: E402
+import forge.logging_setup as logging_setup  # noqa: E402
+import forge.sandbox as sb  # noqa: E402
+from forge.logging_setup import Logger, get_logger, init_logger, log_event, redact, reset_logger  # noqa: E402
+from forge.sandbox import (  # noqa: E402
     DockerSandbox,
     LocalSandbox,
     Sandbox,
@@ -178,7 +178,7 @@ class TestDockerArgv(unittest.TestCase):
         with patch.object(sb, "docker_available", return_value=True):
             killed = []
             d = DockerSandbox(runner=_FakeRunner(timeout=True), deny_patterns=[])
-            with patch("src.sandbox.subprocess.run", side_effect=lambda argv, **kw: killed.append(argv) or _FakeProc()):
+            with patch("forge.sandbox.subprocess.run", side_effect=lambda argv, **kw: killed.append(argv) or _FakeProc()):
                 res = d.run("sleep 999", timeout=1)
             self.assertFalse(res.ok)
             self.assertEqual(res.error, "timeout")
@@ -242,7 +242,7 @@ class TestSandboxLoggingIntegration(unittest.TestCase):
         self.addCleanup(reset_sandbox)
         reset_sandbox()
         with patch.object(sb, "docker_available", return_value=False):
-            from src import tools
+            from forge import tools
 
             out = tools.run_command(f'"{PY}" -c "print(\'via-sandbox\')"')
             self.assertIn("via-sandbox", out)
@@ -255,7 +255,7 @@ class TestSandboxLoggingIntegration(unittest.TestCase):
     def test_run_command_blocks_dangerous(self):
         reset_sandbox()
         with patch.object(sb, "docker_available", return_value=False):
-            from src import tools
+            from forge import tools
 
             self.assertIn("拦截", tools.run_command("rm -rf /"))
 
@@ -402,7 +402,7 @@ except Exception:                                              # pragma: no cove
 @unittest.skipUnless(TestClient is not None, "未装服务依赖（pip install handcraft-agent[server]）")
 class TestServerLogIntegration(unittest.TestCase):
     def test_http_request_logged(self):
-        from src.server import ForgeService, SessionStore, create_app
+        from forge.server import ForgeService, SessionStore, create_app
 
         tmp = tempfile.mkdtemp(prefix="forge-httplog-")
         init_logger({"logging": {"dir": tmp, "level": "INFO", "enabled": True}})

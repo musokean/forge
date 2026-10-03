@@ -17,7 +17,7 @@ import time
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
+from forge.agent import Agent
 
 TEMP = os.environ.get("TEMP", "/tmp")
 FIX = lambda n: os.path.join(TEMP, f"forge_diverse_{n}.txt")

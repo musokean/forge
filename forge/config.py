@@ -3,7 +3,7 @@ import os
 
 import yaml
 
-# 项目根目录 = 本文件上一级（src/）的上一级；路径基于代码位置，与启动时的 cwd 无关
+# 项目根目录 = 本文件上一级（forge/）的上一级；路径基于代码位置，与启动时的 cwd 无关
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 # 内置最小配置模板：pip 安装（无 config/ 目录）时自动生成，避免 FileNotFoundError（2026-08-24 实测）

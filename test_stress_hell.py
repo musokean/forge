@@ -9,9 +9,9 @@ from concurrent.futures import ThreadPoolExecutor
 
 sys.path.insert(0, ".")
 
-from src.tools import execute, TOOLS
-from src.agent import Agent
-from src.llm import chat
+from forge.tools import execute, TOOLS
+from forge.agent import Agent
+from forge.llm import chat
 
 
 def rand_str(n=20):

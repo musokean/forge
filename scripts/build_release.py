@@ -9,7 +9,7 @@
   python scripts/build_release.py [--out release/forge] [--no-smoke]
 
 产出 release/forge/：
-  src/ main.py pyproject.toml requirements.txt test_*.py  README.md README.zh-CN.md
+  forge/ main.py pyproject.toml requirements.txt test_*.py  README.md README.zh-CN.md
   config/models.example.yaml（key 脱敏模板，用户填 key 后用）
   .gitignore（排除 config/models.yaml 等敏感文件）
 """
@@ -26,13 +26,13 @@ DEFAULT_OUT = os.path.join(BASE_DIR, "release", "forge")
 
 # 复制白名单（顶层）：代码 + 测试 + 文档 + 配置模板 + CI
 COPY_GLOBS = [
-    "src/**", "main.py", "pyproject.toml", "requirements.txt",
+    "forge/**", "main.py", "pyproject.toml", "requirements.txt",
     "test_*.py", "smoke_*.py", "stress_*.py",
     "README.md", "README.zh-CN.md", "LICENSE",
     ".github/**",
     # 硬件（#16）：Phase 0 模拟器 + Phase 1 设备端模拟器 + 固件骨架 + 协议文档
     "fake_device.py", "device_sim.py", "hardware/**", "docs/**",
-    # #17 客户端执行器：被控 PC 上的入口（中心侧代码在 src/ 里）
+    # #17 客户端执行器：被控 PC 上的入口（中心侧代码在 forge/ 里）
     "executor_agent.py",
 ]
 # 明确排除（防误伤）：本地运行残留（scripts/ 单独处理——只放行 build_release.py）

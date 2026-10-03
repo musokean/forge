@@ -19,11 +19,11 @@ from unittest.mock import patch
 
 sys.path.insert(0, ".")
 
-import src.executor_hub as hubmod                              # noqa: E402
-from src.cua import Action, CuaError, ComputerUseLoop, Plan, PlanStep, Replan, Verdict  # noqa: E402
-from src.executor import ExecutorClient, FakeDriver, NullDriver  # noqa: E402
-from src.executor_hub import ExecutorError, ExecutorHub, reset_hub  # noqa: E402
-from src.logging_setup import init_logger, reset_logger        # noqa: E402
+import forge.executor_hub as hubmod                              # noqa: E402
+from forge.cua import Action, CuaError, ComputerUseLoop, Plan, PlanStep, Replan, Verdict  # noqa: E402
+from forge.executor import ExecutorClient, FakeDriver, NullDriver  # noqa: E402
+from forge.executor_hub import ExecutorError, ExecutorHub, reset_hub  # noqa: E402
+from forge.logging_setup import init_logger, reset_logger        # noqa: E402
 
 PY = sys.executable
 
@@ -338,7 +338,7 @@ class TestExecutorClient(HubBase):
 try:
     import uvicorn                                            # noqa: E402
 
-    from src.server import SessionStore, create_app            # noqa: E402
+    from forge.server import SessionStore, create_app            # noqa: E402
     HAS_SERVER = True
 except Exception:                                              # pragma: no cover
     HAS_SERVER = False

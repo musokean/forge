@@ -10,10 +10,10 @@ sys.path.insert(0, ".")
 
 from pydantic import BaseModel
 
-import src.structured as S
-from src.structured import RoleBrief, ask_structured, extract_json
-from src.agent import Agent
-from src.orchestrator import debate, run_parallel
+import forge.structured as S
+from forge.structured import RoleBrief, ask_structured, extract_json
+from forge.agent import Agent
+from forge.orchestrator import debate, run_parallel
 
 
 # ---------- mock LLM ----------

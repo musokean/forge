@@ -11,8 +11,8 @@ from unittest.mock import patch
 sys.path.insert(0, ".")
 
 from fake_device import BeautyDevice
-from src.tools import TOOLS, device_level, device_power, device_status, execute, is_write
-from src.approval import Approver
+from forge.tools import TOOLS, device_level, device_power, device_status, execute, is_write
+from forge.approval import Approver
 
 
 class TestBeautyDevice(unittest.TestCase):
@@ -99,9 +99,9 @@ class TestHardwareTools(unittest.TestCase):
         **本机 config/models.yaml 的 device 段**变化（本机冒烟配成 serial 就会去连真链路
         → 用例假失败）。测试不该依赖本机配置，故显式 patch；真链路的用例在 test_hardware.py。
         """
-        import src.tools as _tools
+        import forge.tools as _tools
 
-        patcher = patch("src.config.load_config",
+        patcher = patch("forge.config.load_config",
                         return_value={"device": {"enabled": False, "transport": "sim"}})
         patcher.start()
         self.addCleanup(patcher.stop)

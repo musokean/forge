@@ -10,8 +10,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
-from src.llm import chat, stream_chat
+from forge.agent import Agent
+from forge.llm import chat, stream_chat
 
 
 class Simulated402(Exception):
@@ -64,7 +64,7 @@ class TestLlmDegrade(unittest.TestCase):
 
     def test_stream_chat_degrades_on_402(self):
         cfg = _mini_cfg()
-        with patch("src.llm._get_client", return_value=_FakeClient()):
+        with patch("forge.llm._get_client", return_value=_FakeClient()):
             async def go():
                 out = []
                 async for delta, usage in stream_chat(cfg, [{"role": "user", "content": "hi"}]):
@@ -87,7 +87,7 @@ class TestLlmDegrade(unittest.TestCase):
             def chat(self):
                 return MagicMock(completions=self._C())
 
-        with patch("src.llm._get_client", return_value=_AllFail()):
+        with patch("forge.llm._get_client", return_value=_AllFail()):
             async def go():
                 async for _ in stream_chat(cfg, []):
                     pass
@@ -98,7 +98,7 @@ class TestLlmDegrade(unittest.TestCase):
     def test_chat_degrades_to_fallback(self):
         cfg = _mini_cfg()
         ok_resp = MagicMock()
-        with patch("src.llm._call_role",
+        with patch("forge.llm._call_role",
                    new=AsyncMock(side_effect=[Simulated402("402"), ok_resp])):
             async def go():
                 return await chat(cfg, [], role="default")
@@ -111,7 +111,7 @@ class TestAgentFriendly(unittest.TestCase):
 
     def test_nostream_402_returns_friendly(self):
         a = Agent(stream=False)
-        with patch("src.agent.chat", new=AsyncMock(side_effect=Simulated402("Insufficient Balance"))):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=Simulated402("Insufficient Balance"))):
             out = asyncio.run(a.run("问题"))
         self.assertTrue(out.startswith("⚠ 模型调用失败"), f"非流式应友好返回，实际：{out[:40]}")
         self.assertIn("Insufficient Balance", out, "提示里带失败原因")
@@ -124,7 +124,7 @@ class TestAgentFriendly(unittest.TestCase):
             raise Simulated402("Insufficient Balance")
             yield  # pragma: no cover
 
-        with patch("src.agent.stream_chat", new=fake_stream):
+        with patch("forge.agent.stream_chat", new=fake_stream):
             out = asyncio.run(a.run("问题"))
         self.assertTrue(out.startswith("⚠ 模型调用失败"), f"流式应友好返回，实际：{out[:40]}")
         self.assertEqual(a.tracer.events[-1]["type"], "run_end", "失败也收尾 trace")

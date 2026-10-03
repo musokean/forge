@@ -21,12 +21,12 @@ from unittest.mock import patch
 
 sys.path.insert(0, ".")
 
-import src.hwproto as P                                    # noqa: E402
-import src.hwtransport as T                                # noqa: E402
-import src.logging_setup as logging_setup                  # noqa: E402
+import forge.hwproto as P                                    # noqa: E402
+import forge.hwtransport as T                                # noqa: E402
+import forge.logging_setup as logging_setup                  # noqa: E402
 from device_sim import DeviceSimulator, serve_socket       # noqa: E402
 from fake_device import BeautyDevice                       # noqa: E402
-from src.hwcontrol import (                                # noqa: E402
+from forge.hwcontrol import (                                # noqa: E402
     AssetRegistry,
     CommandService,
     HardwareError,
@@ -34,7 +34,7 @@ from src.hwcontrol import (                                # noqa: E402
     PolicyEngine,
     reset_link,
 )
-from src.logging_setup import init_logger, reset_logger    # noqa: E402
+from forge.logging_setup import init_logger, reset_logger    # noqa: E402
 
 # ── 测试基类：日志一律写临时目录（绝不碰 repo 的 data/logs）──────────
 class HwTestBase(unittest.TestCase):
@@ -595,12 +595,12 @@ class TestToolsIntegration(HwTestBase):
             self.skipTest("未装 pyserial")
         sim, port = start_socket_sim(test_hooks=True)
         cfg = link_cfg(f"socket://127.0.0.1:{port}")
-        import src.tools as tools
+        import forge.tools as tools
 
         old = tools._device
         tools._device = None
         self.addCleanup(lambda: setattr(tools, "_device", old))
-        with patch("src.config.load_config", return_value=cfg):
+        with patch("forge.config.load_config", return_value=cfg):
             st = json.loads(tools.device_status())
             self.assertTrue(st.get("connected"), st)
             self.assertTrue(json.loads(tools.device_power("on"))["ok"])
@@ -611,7 +611,7 @@ class TestToolsIntegration(HwTestBase):
         self.assertGreaterEqual(sim.counters["commands"], 4)
 
     def test_tools_fallback_when_link_down(self):
-        import src.tools as tools
+        import forge.tools as tools
 
         old = tools._device
         tools._device = None
@@ -619,19 +619,19 @@ class TestToolsIntegration(HwTestBase):
         cfg = {"device": {"enabled": True, "transport": "serial",
                           "serial_url": f"socket://127.0.0.1:{_free_port()}", "timeout": 0.3,
                           "retries": 0, "monitor": False}}
-        with patch("src.config.load_config", return_value=cfg):
+        with patch("forge.config.load_config", return_value=cfg):
             out = json.loads(tools.device_status())
         self.assertFalse(out["ok"])
         self.assertIn("设备不可用", out["reason"])                  # 连不上要说清楚，不装成功
 
     def test_sim_mode_unchanged(self):
         """默认（sim）仍走 Phase 0 进程内模拟器，行为不变。"""
-        import src.tools as tools
+        import forge.tools as tools
 
         old = tools._device
         tools._device = None
         self.addCleanup(lambda: setattr(tools, "_device", old))
-        with patch("src.config.load_config", return_value={"device": {"enabled": False,
+        with patch("forge.config.load_config", return_value={"device": {"enabled": False,
                                                                      "transport": "sim"}}):
             st = json.loads(tools.device_status())
         self.assertIn("temperature_c", st)
@@ -655,7 +655,7 @@ class TestConfigWriterSections(unittest.TestCase):
     def test_appends_missing_device_section(self):
         import yaml
 
-        import src.config_writer as cw
+        import forge.config_writer as cw
 
         path = self._tmp_cfg()
         with patch.object(cw, "config_path", return_value=path):
@@ -679,7 +679,7 @@ class TestConfigWriterSections(unittest.TestCase):
     def test_appends_missing_sandbox_section(self):
         import yaml
 
-        import src.config_writer as cw
+        import forge.config_writer as cw
 
         path = self._tmp_cfg()
         with patch.object(cw, "config_path", return_value=path):

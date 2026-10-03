@@ -16,12 +16,12 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from src.executor import ExecutorClient, default_driver          # noqa: E402
+from forge.executor import ExecutorClient, default_driver          # noqa: E402
 
 
 def load_client_conf():
     try:
-        from src.config import load_config
+        from forge.config import load_config
 
         return ((load_config() or {}).get("executor") or {}).get("client") or {}
     except Exception:

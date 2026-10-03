@@ -14,7 +14,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
-from src.web import ForgeWeb, _PAGE_HTML
+from forge.web import ForgeWeb, _PAGE_HTML
 
 
 def _fake_agent(reply="测试回复"):
@@ -133,7 +133,7 @@ class TestWebLifecycle(unittest.TestCase):
         web.start()
         try:
             mem = SimpleNamespace(auto_remember=lambda s: None, compose_context=lambda s: "")
-            with patch("src.memory.get_memory", return_value=mem):
+            with patch("forge.memory.get_memory", return_value=mem):
                 data = json.dumps({"message": "你好"}).encode("utf-8")
                 req = urllib.request.Request(web.url.rstrip("/") + "/api/chat", data=data,
                                              headers={"Content-Type": "application/json", "Connection": "close"})

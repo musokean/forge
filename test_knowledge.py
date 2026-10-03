@@ -10,8 +10,8 @@ import unittest
 
 sys.path.insert(0, ".")
 
-from src.knowledge import KnowledgeBase
-from src.tools import TOOLS, execute, get_tools_schema, is_write
+from forge.knowledge import KnowledgeBase
+from forge.tools import TOOLS, execute, get_tools_schema, is_write
 
 
 def _mk_files(root):
@@ -216,8 +216,8 @@ class TestKbTools(unittest.TestCase):
         with open(p, "w", encoding="utf-8") as f:
             f.write("知识库检索测试：本地部署 AI Agent 应该重视可控安全。")
         # 用临时库替换单例（避免污染真实 data/knowledge.db）
-        from src import tools as tools_mod
-        from src.knowledge import KnowledgeBase
+        from forge import tools as tools_mod
+        from forge.knowledge import KnowledgeBase
         real = tools_mod._KB
         tools_mod._KB = KnowledgeBase(os.path.join(tmp, "kb.db"))
         try:
@@ -234,8 +234,8 @@ class TestKbTools(unittest.TestCase):
         p = os.path.join(tmp, "y.md")
         with open(p, "w", encoding="utf-8") as f:
             f.write("入库测试文档。")
-        from src import tools as tools_mod
-        from src.knowledge import KnowledgeBase
+        from forge import tools as tools_mod
+        from forge.knowledge import KnowledgeBase
         real = tools_mod._KB
         tools_mod._KB = KnowledgeBase(os.path.join(tmp, "kb2.db"))
         try:

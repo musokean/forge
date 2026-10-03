@@ -13,18 +13,18 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
-from src.skills import (
+from forge.skills import (
     SKILLS, activate, deactivate, list_skills, active_skills,
     compose_prompt, schema_filter, skill_status_line,
 )
-from src.memory import MemoryStore
-from src.structured import RoleBrief
+from forge.memory import MemoryStore
+from forge.structured import RoleBrief
 
 
 # ===================== 1) Skill 技能包 =====================
 class TestSkills(unittest.TestCase):
     def setUp(self):
-        from src import skills
+        from forge import skills
         skills._active = set()
 
     def test_registry_has_builtin(self):
@@ -116,45 +116,45 @@ def _fake_resp(content):
 
 class TestReflect(unittest.TestCase):
     def test_evaluate_parses_score(self):
-        from src.reflect import evaluate_answer
+        from forge.reflect import evaluate_answer
         cfg = {"reflect": {"enabled": True}}
-        with patch("src.reflect.chat", AsyncMock(return_value=_fake_resp(
+        with patch("forge.reflect.chat", AsyncMock(return_value=_fake_resp(
                 '{"score": 4, "issues": ["漏了关键结论"], "suggestion": "补充结论"}'))):
             v = asyncio.run(evaluate_answer(cfg, "q", "a", judge_role="fallback"))
         self.assertEqual(v["score"], 4)
         self.assertEqual(v["suggestion"], "补充结论")
 
     def test_evaluate_failure_returns_none(self):
-        from src.reflect import evaluate_answer
-        with patch("src.reflect.chat", AsyncMock(side_effect=Exception("boom"))):
+        from forge.reflect import evaluate_answer
+        with patch("forge.reflect.chat", AsyncMock(side_effect=Exception("boom"))):
             v = asyncio.run(evaluate_answer({}, "q", "a"))
         self.assertIsNone(v)  # 评审失败静默，不阻塞
 
     def test_evaluate_invalid_json_returns_none(self):
-        from src.reflect import evaluate_answer
-        with patch("src.reflect.chat", AsyncMock(return_value=_fake_resp("不是JSON"))):
+        from forge.reflect import evaluate_answer
+        with patch("forge.reflect.chat", AsyncMock(return_value=_fake_resp("不是JSON"))):
             v = asyncio.run(evaluate_answer({}, "q", "a"))
         self.assertIsNone(v)
 
     def test_refine_failure_keeps_original(self):
-        from src.reflect import refine_answer
-        with patch("src.reflect.chat", AsyncMock(side_effect=Exception("boom"))):
+        from forge.reflect import refine_answer
+        with patch("forge.reflect.chat", AsyncMock(side_effect=Exception("boom"))):
             out = asyncio.run(refine_answer({}, "q", "原答案", "意见"))
         self.assertEqual(out, "原答案")  # 修正失败绝不比不纠更差
 
     def test_maybe_reflect_disabled_returns_unchanged(self):
-        from src.agent import Agent
-        with patch("src.agent.load_config", return_value={"reflect": {"enabled": False}}), \
-             patch("src.agent.compose_prompt", side_effect=lambda s: s), \
-             patch("src.agent.schema_filter", side_effect=lambda s: s):
+        from forge.agent import Agent
+        with patch("forge.agent.load_config", return_value={"reflect": {"enabled": False}}), \
+             patch("forge.agent.compose_prompt", side_effect=lambda s: s), \
+             patch("forge.agent.schema_filter", side_effect=lambda s: s):
             agent = Agent.__new__(Agent)
             agent.cfg = {"reflect": {"enabled": False}}
             out = asyncio.run(agent._maybe_reflect("q", "答案"))
         self.assertEqual(out, "答案")
 
     def test_maybe_reflect_low_score_refines(self):
-        from src.agent import Agent
-        from src import reflect as reflect_mod
+        from forge.agent import Agent
+        from forge import reflect as reflect_mod
         agent = Agent.__new__(Agent)
         agent.cfg = {"reflect": {"enabled": True, "min_score": 6, "max_rounds": 1, "judge_role": "fallback"}}
         agent.stream = False
@@ -166,8 +166,8 @@ class TestReflect(unittest.TestCase):
         self.assertEqual(out, "修正后的完整答案")
 
     def test_maybe_reflect_good_score_unchanged(self):
-        from src.agent import Agent
-        from src import reflect as reflect_mod
+        from forge.agent import Agent
+        from forge import reflect as reflect_mod
         agent = Agent.__new__(Agent)
         agent.cfg = {"reflect": {"enabled": True, "min_score": 6, "max_rounds": 1}}
         agent.stream = False
@@ -181,7 +181,7 @@ class TestReflect(unittest.TestCase):
 # ===================== 4) Supervisor 规划执行 =====================
 class TestSupervisor(unittest.TestCase):
     def test_plan_schema(self):
-        from src.orchestrator import Plan, PlanItem
+        from forge.orchestrator import Plan, PlanItem
         p = Plan(plan_title="调研", subtasks=[
             PlanItem(title="查 A", instruction="调研 A 的特点"),
             PlanItem(title="查 B", instruction="调研 B 的特点"),
@@ -190,7 +190,7 @@ class TestSupervisor(unittest.TestCase):
         self.assertEqual(p.subtasks[1].title, "查 B")
 
     def test_supervisor_normal_flow(self):
-        from src.orchestrator import run_supervised, Plan, PlanItem
+        from forge.orchestrator import run_supervised, Plan, PlanItem
         plan = Plan(plan_title="调研", subtasks=[
             PlanItem(title="A", instruction="调研 A"),
             PlanItem(title="B", instruction="调研 B"),
@@ -199,30 +199,30 @@ class TestSupervisor(unittest.TestCase):
             RoleBrief(name="A", stance="A 便宜", key_points=["点1"]),
             RoleBrief(name="B", stance="B 快", key_points=["点2"]),
         ]
-        with patch("src.orchestrator.load_config", return_value={}), \
-             patch("src.orchestrator.ask_structured", AsyncMock(return_value=(plan, None))), \
-             patch("src.orchestrator.run_parallel", AsyncMock(return_value=briefs)), \
-             patch("src.orchestrator.chat", AsyncMock(return_value=_fake_resp("合并后的最终答案"))):
+        with patch("forge.orchestrator.load_config", return_value={}), \
+             patch("forge.orchestrator.ask_structured", AsyncMock(return_value=(plan, None))), \
+             patch("forge.orchestrator.run_parallel", AsyncMock(return_value=briefs)), \
+             patch("forge.orchestrator.chat", AsyncMock(return_value=_fake_resp("合并后的最终答案"))):
             out = asyncio.run(run_supervised("调研 A 和 B"))
         self.assertEqual(out, "合并后的最终答案")
 
     def test_supervisor_plan_fail_degrades_to_direct(self):
-        from src.orchestrator import run_supervised
-        from src.structured import StructuredError
-        with patch("src.orchestrator.load_config", return_value={}), \
-             patch("src.orchestrator.ask_structured", AsyncMock(side_effect=StructuredError("x"))), \
-             patch("src.agent.Agent.run", AsyncMock(return_value="直答结果")):
+        from forge.orchestrator import run_supervised
+        from forge.structured import StructuredError
+        with patch("forge.orchestrator.load_config", return_value={}), \
+             patch("forge.orchestrator.ask_structured", AsyncMock(side_effect=StructuredError("x"))), \
+             patch("forge.agent.Agent.run", AsyncMock(return_value="直答结果")):
             out = asyncio.run(run_supervised("复杂任务"))
         self.assertEqual(out, "直答结果")  # 拆解失败自动降级，不崩
 
     def test_supervisor_failed_subtask_still_merges(self):
-        from src.orchestrator import run_supervised, Plan, PlanItem
+        from forge.orchestrator import run_supervised, Plan, PlanItem
         plan = Plan(plan_title="t", subtasks=[PlanItem(title="A", instruction="a")])
         briefs = ["子任务执行失败"]  # 非 RoleBrief → 视为失败
-        with patch("src.orchestrator.load_config", return_value={}), \
-             patch("src.orchestrator.ask_structured", AsyncMock(return_value=(plan, None))), \
-             patch("src.orchestrator.run_parallel", AsyncMock(return_value=briefs)), \
-             patch("src.orchestrator.chat", AsyncMock(return_value=_fake_resp("部分失败但合并成功"))):
+        with patch("forge.orchestrator.load_config", return_value={}), \
+             patch("forge.orchestrator.ask_structured", AsyncMock(return_value=(plan, None))), \
+             patch("forge.orchestrator.run_parallel", AsyncMock(return_value=briefs)), \
+             patch("forge.orchestrator.chat", AsyncMock(return_value=_fake_resp("部分失败但合并成功"))):
             out = asyncio.run(run_supervised("任务"))
         self.assertEqual(out, "部分失败但合并成功")
 

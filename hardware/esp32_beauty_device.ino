@@ -15,7 +15,7 @@
 //   温度        → GPIO 34（NTC 10k 分压，ADC1 通道）
 //   心跳 LED    → GPIO 2
 //
-// 协议要点（与 src/hwproto.py 一一对应）：
+// 协议要点（与 forge/hwproto.py 一一对应）：
 //   行式 JSON，`\n` 结尾；字段 v/seq/ts/type/crc
 //   crc = crc32(不含 crc 字段的规范化 JSON) 前 8 位 hex —— **规范化 = 键按字典序、无空格**
 //   下行 cmd {"id":"set_level","args":{"level":2}}；上行先 ack（接下/拒绝）再 state（真实状态）

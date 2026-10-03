@@ -9,7 +9,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
+from forge.agent import Agent
 
 
 def _mk_agent(max_context_tokens=8000, max_tool_output=1500):
@@ -57,7 +57,7 @@ class TestSummarize(unittest.TestCase):
         resp.choices[0].message.content = " 摘要正文 "
         resp.usage.prompt_tokens = 10
         resp.usage.completion_tokens = 5
-        with patch("src.agent.chat", new=AsyncMock(return_value=resp)) as m_chat:
+        with patch("forge.agent.chat", new=AsyncMock(return_value=resp)) as m_chat:
             out = asyncio.run(a._summarize("很长很长" * 100, "压缩测试"))
         self.assertEqual(out, "摘要正文")
         # 摘要调用记入 total_tokens（诚实记账）
@@ -65,7 +65,7 @@ class TestSummarize(unittest.TestCase):
 
     def test_summarize_failure_returns_none(self):
         a = _mk_agent()
-        with patch("src.agent.chat", new=AsyncMock(side_effect=RuntimeError("上游挂了"))):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=RuntimeError("上游挂了"))):
             out = asyncio.run(a._summarize("很长很长" * 100, "压缩测试"))
         self.assertIsNone(out, "摘要失败返回 None，不抛异常")
 

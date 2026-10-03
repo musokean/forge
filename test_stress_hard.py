@@ -6,8 +6,8 @@ import time
 
 sys.path.insert(0, ".")
 
-from src.tools import execute, TOOLS, _safe_eval
-from src.agent import Agent
+from forge.tools import execute, TOOLS, _safe_eval
+from forge.agent import Agent
 
 
 def injection_fuzz():

@@ -9,7 +9,7 @@ import time
 import unittest
 from unittest.mock import patch
 
-from src.tasks import (
+from forge.tasks import (
     TaskScheduler,
     parse_schedule,
     compute_next,
@@ -132,7 +132,7 @@ class TestExecute(unittest.TestCase):
 
     def test_run_now_logs(self):
         self.s.add("t5", "每1小时", "hello")
-        with patch("src.agent.chat", _fake_chat):
+        with patch("forge.agent.chat", _fake_chat):
             out = self.s.run_now("t5")
         self.assertIn("✅", out)
         runs = self.s.recent_runs()
@@ -151,7 +151,7 @@ class TestExecute(unittest.TestCase):
     def test_kb_sink(self):
         fake_kb = _FakeKB()
         self.s.add("t7", "每1小时", "沉淀这条", kb_sink=True)
-        with patch("src.agent.chat", _fake_chat), patch("src.tools._get_kb", lambda: fake_kb):
+        with patch("forge.agent.chat", _fake_chat), patch("forge.tools._get_kb", lambda: fake_kb):
             self.s.run_now("t7")
         self.assertEqual(len(fake_kb.calls), 1)
         self.assertIn("t7", fake_kb.calls[0][0])
@@ -171,7 +171,7 @@ class TestBackgroundAndCatchUp(unittest.TestCase):
     def test_catch_up_on_start(self):
         self.s.add("bg1", "每1小时", "后台跑我")
         self._set_past("bg1")  # 模拟离线期间已到期
-        with patch("src.agent.chat", _fake_chat):
+        with patch("forge.agent.chat", _fake_chat):
             self.s.start()       # 启动 → _catch_up 补跑到期任务
             time.sleep(2.0)      # 等线程执行完
             self.s.stop()
@@ -183,7 +183,7 @@ class TestBackgroundAndCatchUp(unittest.TestCase):
         # 直接把 next_run 设为过去，启动后第一轮循环应触发
         self.s.add("bg2", "每1小时", "循环触发")
         self._set_past("bg2")
-        with patch("src.agent.chat", _fake_chat):
+        with patch("forge.agent.chat", _fake_chat):
             self.s.start()
             time.sleep(2.0)
             self.s.stop()
@@ -192,7 +192,7 @@ class TestBackgroundAndCatchUp(unittest.TestCase):
     def test_no_trigger_when_future(self):
         self.s.add("bg3", "每1小时", "未来才跑")
         # next_run 默认是 now+1h，启动不应触发
-        with patch("src.agent.chat", _fake_chat):
+        with patch("forge.agent.chat", _fake_chat):
             self.s.start()
             time.sleep(1.5)
             self.s.stop()

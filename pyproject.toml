@@ -26,7 +26,7 @@ classifiers = [
 dependencies = [
     "openai>=1.0",
     "pyyaml>=6.0",
-    "httpx>=0.24",  # src/llm.py 直接 import httpx（openai 的间接依赖不可靠，必须显式声明）
+    "httpx>=0.24",  # forge/llm.py 直接 import httpx（openai 的间接依赖不可靠，必须显式声明）
 ]
 
 [project.urls]
@@ -67,7 +67,7 @@ forge-device-sim = "device_sim:main"        # #16 设备端模拟器（说真协
 
 [tool.setuptools]
 py-modules = ["main", "executor_agent", "device_sim"]
-packages = ["src"]
+packages = ["forge"]
 
 [tool.pytest.ini_options]
 # 本地 `pytest .` 的坑：release/ 是 build_release.py 生成的副本目录，里面有 test_*.py 的同名拷贝，

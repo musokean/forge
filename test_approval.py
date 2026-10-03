@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
-from src.approval import Approver
+from forge.agent import Agent
+from forge.approval import Approver
 
 
 def _resp(content=None, tool_calls=None):
@@ -82,7 +82,7 @@ class TestAgentApproval(unittest.TestCase):
         r1 = _resp(tool_calls=[_tc("write_file", f'{{"path": "{_p(p1)}", "content": "x"}}', id_="c1")])
         r2 = _resp(tool_calls=[_tc("write_file", f'{{"path": "{_p(p2)}", "content": "y"}}', id_="c2")])
         r3 = _resp(content="搞定")
-        with patch("src.agent.chat", new=AsyncMock(side_effect=[r1, r2, r3])):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=[r1, r2, r3])):
             out = asyncio.run(a.run("写两个文件"))
         self.assertEqual(out, "搞定")
         # 第一次被拒：文件不存在，tool 结果带拒绝信息
@@ -97,7 +97,7 @@ class TestAgentApproval(unittest.TestCase):
         a = Agent(stream=False, approver=Approver(callback=lambda n, s: called.append(n) or True))
         r1 = _resp(tool_calls=[_tc("calculator", '{"expression":"1+1"}')])
         r2 = _resp(content="2")
-        with patch("src.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
             asyncio.run(a.run("算数"))
         self.assertEqual(called, [], "只读工具不触发审批")
 
@@ -114,7 +114,7 @@ class TestAgentApproval(unittest.TestCase):
         a = Agent(stream=False, approver=Approver(auto_approve=True))
         r1 = _resp(tool_calls=[_tc("write_file", f'{{"path": "{_p(p)}", "content": "hello"}}')])
         r2 = _resp(content="写好了")
-        with patch("src.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
             asyncio.run(a.run("写文件"))
         self.assertTrue(os.path.exists(p))
         self.assertEqual(open(p, encoding="utf-8").read(), "hello")

@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, ".")
 
-from src.voice import (PARTIAL, SPEECH_END, SPEECH_START, EdgeTTS, EnergyVAD, FileSource,
+from forge.voice import (PARTIAL, SPEECH_END, SPEECH_START, EdgeTTS, EnergyVAD, FileSource,
                        MicListener, NullSink, ScriptedSource, SentenceSplitter,
                        StreamingSpeaker, _check_deps, is_exit, run_voice,
                        streaming_voice_loop, voice_loop, write_wav)
@@ -55,13 +55,13 @@ class _FakeAgent:
 
 class TestDepsCheck(unittest.TestCase):
     def test_missing_deps_reported(self):
-        with patch("src.voice.importlib.util.find_spec", return_value=None):
+        with patch("forge.voice.importlib.util.find_spec", return_value=None):
             missing = _check_deps()
         self.assertTrue(any("edge_tts" in m for m in missing))
         self.assertTrue(any("whisper" in m for m in missing))
 
     def test_all_deps_ok(self):
-        with patch("src.voice.importlib.util.find_spec", return_value=MagicMock()):
+        with patch("forge.voice.importlib.util.find_spec", return_value=MagicMock()):
             self.assertEqual(_check_deps(), [])
 
 
@@ -99,9 +99,9 @@ class TestVoiceLoop(unittest.TestCase):
         agent = _FakeAgent()
         stt = _FakeSTT({"input.wav": "今天天气怎么样"})
         tts = _FakeTTS()
-        with patch("src.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
-            with patch("src.voice.record_until_silence", return_value=2.0) as m_rec:
-                with patch("src.voice.play_audio") as m_play:
+        with patch("forge.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
+            with patch("forge.voice.record_until_silence", return_value=2.0) as m_rec:
+                with patch("forge.voice.play_audio") as m_play:
                     asyncio.run(voice_loop(agent, stt, tts, keep_alive=False))
         self.assertEqual(agent.tasks, ["今天天气怎么样"])
         self.assertTrue(tts.calls)  # 有 TTS 调用
@@ -112,9 +112,9 @@ class TestVoiceLoop(unittest.TestCase):
         agent = _FakeAgent()
         stt = _FakeSTT({"input.wav": "退出"})
         tts = _FakeTTS()
-        with patch("src.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
-            with patch("src.voice.record_until_silence", return_value=1.5):
-                with patch("src.voice.play_audio"):
+        with patch("forge.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
+            with patch("forge.voice.record_until_silence", return_value=1.5):
+                with patch("forge.voice.play_audio"):
                     asyncio.run(voice_loop(agent, stt, tts, keep_alive=False))
         self.assertEqual(agent.tasks, [])  # 没调 Agent
         self.assertEqual(tts.calls, [])  # 没播语音
@@ -124,8 +124,8 @@ class TestVoiceLoop(unittest.TestCase):
         agent = _FakeAgent()
         stt = _FakeSTT()
         tts = _FakeTTS()
-        with patch("src.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
-            with patch("src.voice.record_until_silence", return_value=0.1):
+        with patch("forge.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
+            with patch("forge.voice.record_until_silence", return_value=0.1):
                 asyncio.run(voice_loop(agent, stt, tts, keep_alive=False, max_rounds=2))
         self.assertEqual(agent.tasks, [])
         self.assertEqual(tts.calls, [])
@@ -135,8 +135,8 @@ class TestVoiceLoop(unittest.TestCase):
         agent = _FakeAgent()
         stt = _FakeSTT({"input.wav": ""})
         tts = _FakeTTS()
-        with patch("src.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
-            with patch("src.voice.record_until_silence", return_value=2.0):
+        with patch("forge.voice.tempfile.TemporaryDirectory", return_value=_FakeTmpDir("/tmp/fake")):
+            with patch("forge.voice.record_until_silence", return_value=2.0):
                 asyncio.run(voice_loop(agent, stt, tts, keep_alive=False, max_rounds=2))
         self.assertEqual(agent.tasks, [])
 
@@ -144,17 +144,17 @@ class TestVoiceLoop(unittest.TestCase):
 class TestRunVoice(unittest.TestCase):
     def test_missing_deps_friendly(self):
         """缺依赖 → 友好提示，不崩。"""
-        with patch("src.voice._check_deps", return_value=["edge_tts（安装：pip install edge-tts）"]):
+        with patch("forge.voice._check_deps", return_value=["edge_tts（安装：pip install edge-tts）"]):
             with patch("sys.stdout") as m:
                 run_voice(_FakeAgent())
                 # 不抛异常即通过
 
     def test_full_path_with_deps(self):
         """依赖齐 → 走 WhisperSTT + EdgeTTS + **Phase 2/3 流式循环**（默认）。"""
-        with patch("src.voice._check_deps", return_value=[]):
-            with patch("src.voice.WhisperSTT") as m_stt:
-                with patch("src.voice.EdgeTTS") as m_tts:
-                    with patch("src.voice.streaming_voice_loop") as m_loop:
+        with patch("forge.voice._check_deps", return_value=[]):
+            with patch("forge.voice.WhisperSTT") as m_stt:
+                with patch("forge.voice.EdgeTTS") as m_tts:
+                    with patch("forge.voice.streaming_voice_loop") as m_loop:
                         run_voice(_FakeAgent())
                         m_stt.assert_called_once()
                         m_tts.assert_called_once()
@@ -162,19 +162,19 @@ class TestRunVoice(unittest.TestCase):
 
     def test_phase1_path_still_available(self):
         """stream=False → 退回 Phase 1 的 voice_loop（保留的老链路）。"""
-        with patch("src.voice._check_deps", return_value=[]):
-            with patch("src.voice.WhisperSTT"):
-                with patch("src.voice.EdgeTTS"):
-                    with patch("src.voice.voice_loop") as m_loop:
+        with patch("forge.voice._check_deps", return_value=[]):
+            with patch("forge.voice.WhisperSTT"):
+                with patch("forge.voice.EdgeTTS"):
+                    with patch("forge.voice.voice_loop") as m_loop:
                         run_voice(_FakeAgent(), stream=False)
                         m_loop.assert_called_once()
 
     def test_file_source_needs_no_microphone(self):
         """--audio-source file:xx.wav → 不检查 sounddevice（无麦克风也能跑）。"""
-        with patch("src.voice._check_deps", return_value=["sounddevice"]):
-            with patch("src.voice.WhisperSTT"):
-                with patch("src.voice.EdgeTTS"):
-                    with patch("src.voice.streaming_voice_loop") as m_loop:
+        with patch("forge.voice._check_deps", return_value=["sounddevice"]):
+            with patch("forge.voice.WhisperSTT"):
+                with patch("forge.voice.EdgeTTS"):
+                    with patch("forge.voice.streaming_voice_loop") as m_loop:
                         run_voice(_FakeAgent(), audio_source="file:/tmp/x.wav", sink="null")
                         self.assertTrue(m_loop.called)
                         src = m_loop.call_args.kwargs.get("source")

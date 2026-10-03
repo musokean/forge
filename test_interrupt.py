@@ -11,41 +11,41 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
-from src.keypress import poll_key, read_guide_line
+from forge.keypress import poll_key, read_guide_line
 
 
 # ===================== 1) poll_key 跨平台 =====================
 class TestPollKey(unittest.TestCase):
     def test_returns_none_when_no_key(self):
         # 无 msvcrt 且 stdin 非 tty → None（不抛异常）
-        with patch("src.keypress._HAS_MSVCRT", False), \
+        with patch("forge.keypress._HAS_MSVCRT", False), \
              patch("sys.stdin") as fake_stdin:
             fake_stdin.isatty.return_value = False
             self.assertIsNone(poll_key())
 
     def test_esc_on_windows(self):
-        with patch("src.keypress._HAS_MSVCRT", True), \
-             patch("src.keypress.msvcrt") as fake_m:
+        with patch("forge.keypress._HAS_MSVCRT", True), \
+             patch("forge.keypress.msvcrt") as fake_m:
             fake_m.kbhit.return_value = True
             fake_m.getwch.return_value = "\x1b"
             self.assertEqual(poll_key(), "ESC")
 
     def test_plain_key_on_windows(self):
-        with patch("src.keypress._HAS_MSVCRT", True), \
-             patch("src.keypress.msvcrt") as fake_m:
+        with patch("forge.keypress._HAS_MSVCRT", True), \
+             patch("forge.keypress.msvcrt") as fake_m:
             fake_m.kbhit.return_value = True
             fake_m.getwch.return_value = "a"
             self.assertEqual(poll_key(), "a")
 
     def test_no_key_on_windows(self):
-        with patch("src.keypress._HAS_MSVCRT", True), \
-             patch("src.keypress.msvcrt") as fake_m:
+        with patch("forge.keypress._HAS_MSVCRT", True), \
+             patch("forge.keypress.msvcrt") as fake_m:
             fake_m.kbhit.return_value = False
             self.assertIsNone(poll_key())
 
     def test_msvcrt_exception_safe(self):
-        with patch("src.keypress._HAS_MSVCRT", True), \
-             patch("src.keypress.msvcrt") as fake_m:
+        with patch("forge.keypress._HAS_MSVCRT", True), \
+             patch("forge.keypress.msvcrt") as fake_m:
             fake_m.kbhit.side_effect = OSError("no console")
             self.assertIsNone(poll_key())
 
@@ -96,7 +96,7 @@ def _mk_stream(chunks, usage=None):
 class TestStreamInterrupt(unittest.TestCase):
     def _mk_agent(self, show_spinner=True):
         """构造测试 Agent；打断相关测试用 show_spinner=True（打断检测挂在这个开关上）。"""
-        from src.agent import Agent
+        from forge.agent import Agent
         a = Agent.__new__(Agent)
         a._config_path = "config/models.yaml"
         a.cfg = {"models": [], "roles": {}}
@@ -113,7 +113,7 @@ class TestStreamInterrupt(unittest.TestCase):
         a.messages = [{"role": "system", "content": "sys"}]
         a.total_tokens = {"prompt": 0, "completion": 0}
         a._interrupts = 0
-        from src.trace import Tracer
+        from forge.trace import Tracer
         a.tracer = Tracer(agent_name="forge", role="default", model="m")
         a._maybe_roll_summary = AsyncMock(return_value=None)
         a._maybe_reflect = AsyncMock(side_effect=lambda t, ans: ans)  # 直接返回原答案（AsyncMock 会 await）
@@ -127,7 +127,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_esc_interrupt_returns_partial(self):
         """流式生成中按 Esc → 中断，返回已生成内容 + 标注。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent()
         # 第一个 chunk 无打断；第二个 chunk 到达时用户按 Esc → 中断
         seq = [iter([_mk_delta(content="已生成一半"), _mk_delta(content="的内容")])]
@@ -149,7 +149,7 @@ class TestStreamInterrupt(unittest.TestCase):
         → agent 把它当异常吞掉，误报「⚠ 模型调用失败（端点 …）」。修法：把「取下一块」
         做成 task 并用 asyncio.wait 等（超时只轮询打断，不 cancel）。
         """
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent()
 
         def slow_stream(*args, **kwargs):
@@ -167,7 +167,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_interrupt_during_slow_first_token(self):
         """首字等待期间按 Esc 仍能打断（轮询窗口内可打断是当初设计的目的）。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent()
 
         def slow_stream(*args, **kwargs):
@@ -185,7 +185,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_guide_redirects_regeneration(self):
         """生成中按任意键 + 输入引导 → 重新生成，返回引导后的答案。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent()
         # 第一轮流式：产生部分内容后打断（poll 返回普通键 'a'）→ 引导
         # 第二轮流式：完整回答
@@ -207,7 +207,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_three_interrupts_aborts(self):
         """连续打断 3 次 → 中止，不再循环。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent()
         chunks1 = [_mk_delta(content="x")]
         def fake_stream(*args, **kwargs):
@@ -223,7 +223,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_explicit_prompt_no_interrupt(self):
         """辩论/并行专用人设（_explicit_prompt=True）不轮询键盘（不打断）。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent(show_spinner=True)
         a._explicit_prompt = True
         def fake_stream(*args, **kwargs):
@@ -236,7 +236,7 @@ class TestStreamInterrupt(unittest.TestCase):
 
     def test_no_spinner_no_interrupt(self):
         """show_spinner=False（并行子任务）不轮询键盘。"""
-        from src import agent as agent_mod
+        from forge import agent as agent_mod
         a = self._mk_agent(show_spinner=False)
         def fake_stream(*args, **kwargs):
             return _mk_stream([_mk_delta(content="后台答案")])

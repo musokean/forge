@@ -20,10 +20,10 @@ from datetime import datetime, timezone, timedelta
 
 sys.path.insert(0, ".")
 
-from src.config import load_config, resolve_model
-from src.orchestrator import run_parallel, debate, get_debate_roles
-from src.router import route
-from src.agent import Agent
+from forge.config import load_config, resolve_model
+from forge.orchestrator import run_parallel, debate, get_debate_roles
+from forge.router import route
+from forge.agent import Agent
 
 # 截止时间：2026-08-18 08:00 Asia/Shanghai (UTC+8)
 DEADLINE = datetime(2026, 8, 18, 8, 0, 0, tzinfo=timezone(timedelta(hours=8)))

@@ -1,6 +1,6 @@
 """M0 验收测试：跑真实 DeepSeek 调用，验证核心循环（对应测试计划 M0 用例）。"""
 import asyncio
-from src.agent import Agent
+from forge.agent import Agent
 
 
 async def main():

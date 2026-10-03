@@ -13,7 +13,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
-from src.eval import Evaluator, EvalResult, _keyword_hit, DEFAULT_GOLDEN, EVAL_EXPORT_DIR
+from forge.eval import Evaluator, EvalResult, _keyword_hit, DEFAULT_GOLDEN, EVAL_EXPORT_DIR
 
 
 class TestKeywordHit(unittest.TestCase):
@@ -80,8 +80,8 @@ class TestRunCase(unittest.TestCase):
             run=AsyncMock(return_value="答案是 2"),
             total_tokens={"prompt": 10, "completion": 5},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value={
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value={
                  "score": 3, "issues": ["太简略"], "suggestion": "展开"})):
             r = asyncio.run(self.ev.run_case(case, agent=fake_agent))
         self.assertTrue(r.keyword_pass)
@@ -96,8 +96,8 @@ class TestRunCase(unittest.TestCase):
             run=AsyncMock(return_value="只有 x"),
             total_tokens={"prompt": 1, "completion": 1},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value={
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value={
                  "score": 9, "issues": [], "suggestion": ""})):
             r = asyncio.run(self.ev.run_case(case, agent=fake_agent))
         self.assertFalse(r.keyword_pass)
@@ -109,8 +109,8 @@ class TestRunCase(unittest.TestCase):
             run=AsyncMock(return_value="forge 是 AI 助手"),
             total_tokens={"prompt": 1, "completion": 1},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value={
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value={
                  "score": 8, "issues": [], "suggestion": ""})):
             r = asyncio.run(self.ev.run_case(case, agent=fake_agent))
         self.assertTrue(r.passed)
@@ -122,8 +122,8 @@ class TestRunCase(unittest.TestCase):
             run=AsyncMock(return_value="结果是 391"),
             total_tokens={"prompt": 1, "completion": 1},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value=None)):
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value=None)):
             r = asyncio.run(self.ev.run_case(case, agent=fake_agent))
         self.assertIsNone(r.judge_score)
         self.assertTrue(r.judge_pass)
@@ -136,18 +136,18 @@ class TestRunCase(unittest.TestCase):
             run=AsyncMock(return_value="ok fine"),
             total_tokens={"prompt": 1, "completion": 1},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(side_effect=Exception("boom"))):
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(side_effect=Exception("boom"))):
             r = asyncio.run(self.ev.run_case(case, agent=fake_agent))
         self.assertIsNone(r.judge_score)
         self.assertTrue(r.passed)
 
     def test_agent_default_created(self):
         """不传 agent 时自动新建 Agent（非流式 + 写操作放行 + 无 spinner）。"""
-        from src.approval import Approver
+        from forge.approval import Approver
         case = {"task": "q", "keywords": [], "min_score": 6}
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value=None)):
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value=None)):
             inst = self.ev._new_agent()
             self.assertFalse(inst.stream)
             self.assertFalse(inst.show_spinner)
@@ -167,8 +167,8 @@ class TestRunAllAndReport(unittest.TestCase):
             run=AsyncMock(side_effect=["k0 hit", "k1 hit", "k2 hit", "k3 hit"]),
             total_tokens={"prompt": 1, "completion": 1},
         )
-        with patch("src.eval.load_config", return_value={}), \
-             patch("src.eval.evaluate_answer", AsyncMock(return_value={"score": 8, "issues": [], "suggestion": ""})):
+        with patch("forge.eval.load_config", return_value={}), \
+             patch("forge.eval.evaluate_answer", AsyncMock(return_value={"score": 8, "issues": [], "suggestion": ""})):
             results = asyncio.run(self.ev.run_all(cases, agent_factory=lambda: fake))
         self.assertEqual(len(results), 4)
         self.assertTrue(all(r.passed for r in results))
@@ -195,7 +195,7 @@ class TestRunAllAndReport(unittest.TestCase):
         # 导出到临时目录：本仓库常驻 Obsidian vault 内，测试产物写成 .md 会污染知识库
         # （2026-09-28 实锤：exports/eval/test-eval.md 导致 vault 笔记数基线漂移 +1）
         import shutil
-        import src.eval as eval_mod
+        import forge.eval as eval_mod
         td = tempfile.mkdtemp(prefix="forge-eval-")
         with patch.object(eval_mod, "EVAL_EXPORT_DIR", td):
             path = self.ev.export_markdown(results, name="test-eval.md")

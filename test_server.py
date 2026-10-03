@@ -12,7 +12,7 @@ import unittest
 
 sys.path.insert(0, ".")
 
-from src.server import (  # noqa: E402
+from forge.server import (  # noqa: E402
     ForgeService,
     _strip_injected,
     HAS_FASTAPI,
@@ -199,8 +199,8 @@ class TestApi(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="forge-api-")
         # 隔离长期记忆库（否则测试会写进 forge 真实的 data/memory.db）
-        import src.memory as memory_mod
-        from src.memory import MemoryStore
+        import forge.memory as memory_mod
+        from forge.memory import MemoryStore
 
         self._orig_get_memory = memory_mod.get_memory
         memory_mod.get_memory = lambda: MemoryStore(os.path.join(self.tmp, "memory.db"))
@@ -310,7 +310,7 @@ class TestBackgroundServe(unittest.TestCase):
 
         tmp = tempfile.mkdtemp(prefix="forge-bg-")
         cfg = {"server": {"db_path": os.path.join(tmp, "s.db"), "api_key": "k"}}
-        from src.server import SessionStore, start_background
+        from forge.server import SessionStore, start_background
 
         server, url = start_background(host="127.0.0.1", port=0, cfg=cfg,
                                        store=SessionStore(os.path.join(tmp, "s.db")))

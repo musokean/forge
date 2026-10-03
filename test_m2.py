@@ -5,9 +5,9 @@ import time
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
-from src.orchestrator import run_parallel, debate, get_debate_roles, DEFAULT_DEBATE_ROLES
-from src.config import load_config, resolve_model
+from forge.agent import Agent
+from forge.orchestrator import run_parallel, debate, get_debate_roles, DEFAULT_DEBATE_ROLES
+from forge.config import load_config, resolve_model
 
 
 def test_multi_model():

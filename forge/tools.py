@@ -395,7 +395,7 @@ def _get_device():
     配置驱动（`config/models.yaml` 的 `device` 段）：
       · `device.enabled: false` 或 `transport: sim`（默认）→ Phase 0 进程内模拟器 `fake_device`
       · `device.enabled: true` 且 `transport: serial|mqtt` → **硬件 Phase 1 真链路**
-        （`src/hwcontrol.py` 的控制平面：资产目录 + 策略 + 命令状态机），首次调用自动握手
+        （`forge/hwcontrol.py` 的控制平面：资产目录 + 策略 + 命令状态机），首次调用自动握手
     两者接口一致（鸭子类型），所以下面几个工具函数一行都不用改。
     """
     global _device, _device_error

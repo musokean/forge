@@ -9,7 +9,7 @@
 
 能力（能力清单由**客户端自己声明**，中心再按策略二次过滤）：
 
-    shell       执行命令（客户端侧走 `src/sandbox.py`，不是裸跑）
+    shell       执行命令（客户端侧走 `forge/sandbox.py`，不是裸跑）
     read_file   读文件（路径 jail + 体积上限）
     write_file  写文件
     list_dir    列目录

@@ -2,12 +2,12 @@
 
 对齐 A25：**复用现成组件，别自己造远程桌面**——
   · 远程画面/远控底座：RustDesk（本模块不重造，见 `docs/executor.md` 的对接说明）
-  · 屏幕理解：截图回传中心，由中心的 Computer Use 视觉角色判断（`src/cua.py`）
+  · 屏幕理解：截图回传中心，由中心的 Computer Use 视觉角色判断（`forge/cua.py`）
   · GUI 操作：pyautogui（可选依赖，未装则该能力**如实报不可用**，不假装成功）
 
 能力（客户端**自己声明**，中心再按策略过滤）：
 
-    shell      执行命令 —— **走本机 `src/sandbox.py`**（Docker 可用则容器隔离，否则加固本机执行）
+    shell      执行命令 —— **走本机 `forge/sandbox.py`**（Docker 可用则容器隔离，否则加固本机执行）
     read_file / write_file / list_dir   —— 路径 jail（默认限定 `executor.client.root`）+ 体积上限
     screenshot 截屏 → base64 PNG（+ 可选 OCR 文本）
     input      click / move / type / key / scroll

@@ -12,8 +12,8 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.llm import chat
-from src.circuit import get_circuit_registry, reset_circuit_registry
+from forge.llm import chat
+from forge.circuit import get_circuit_registry, reset_circuit_registry
 
 CFG = {
     "roles": {"default": {"model": "bad"}, "fallback": {"model": "good"}},

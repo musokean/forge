@@ -2,7 +2,7 @@
 
 一条消息 = 一行 JSON（UTF-8，`\\n` 结尾）。串口与 MQTT 共用同一套帧——**换传输不改协议**，
 设备端固件（`hardware/esp32_beauty_device.ino`）、模拟器（`device_sim.py`）与 Agent 侧
-（`src/hwcontrol.py`）说的是同一种话。
+（`forge/hwcontrol.py`）说的是同一种话。
 
     {"v":1,"seq":7,"ts":1759000000.12,"type":"cmd","id":"set_level","args":{"level":2},"crc":"3f9a1c2b0d4e"}
 

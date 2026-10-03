@@ -156,7 +156,7 @@ jobs:
           if [ -z "$DEEPSEEK_API_KEY" ]; then echo "skipped (no key)"; exit 0; fi
           python -c "
           import asyncio;
-          from src.agent import Agent;
+          from forge.agent import Agent;
           async def main():
               a = Agent(stream=False, show_spinner=False);
               out = await a.run('回复OK两个字母');

@@ -5,8 +5,8 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.tools import execute, TOOLS
-from src.agent import Agent
+from forge.tools import execute, TOOLS
+from forge.agent import Agent
 
 
 def tool_edge_cases():

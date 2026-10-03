@@ -11,8 +11,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 sys.path.insert(0, ".")
 
-from src.agent import Agent
-from src.trace import Tracer
+from forge.agent import Agent
+from forge.trace import Tracer
 
 
 def _resp(content=None, tool_calls=None, p=10, c=5):
@@ -83,7 +83,7 @@ class TestAgentTrace(unittest.TestCase):
         a = Agent(stream=False)
         r1 = _resp(tool_calls=[_tc("calculator", '{"expression":"1+1"}')])
         r2 = _resp(content="结果是 2")
-        with patch("src.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
+        with patch("forge.agent.chat", new=AsyncMock(side_effect=[r1, r2])):
             out = asyncio.run(a.run("算 1+1"))
         self.assertEqual(out, "结果是 2")
         types = [e["type"] for e in a.tracer.events]
@@ -107,7 +107,7 @@ class TestAgentTrace(unittest.TestCase):
             async for x in gen:
                 yield x
 
-        with patch("src.agent.stream_chat", new=fake_stream):
+        with patch("forge.agent.stream_chat", new=fake_stream):
             out = asyncio.run(a.run("算 2*3"))
         self.assertEqual(out, "6")
         types = [e["type"] for e in a.tracer.events]
@@ -120,7 +120,7 @@ class TestAgentTrace(unittest.TestCase):
     def test_multi_agent_independent(self):
         a1 = Agent(stream=False, name="正方")
         a2 = Agent(stream=False, name="反方")
-        with patch("src.agent.chat", new=AsyncMock(return_value=_resp(content="观点"))):
+        with patch("forge.agent.chat", new=AsyncMock(return_value=_resp(content="观点"))):
             asyncio.run(a1.run("论题"))
             asyncio.run(a2.run("论题"))
         self.assertIsNot(a1.tracer, a2.tracer, "多智能体 tracer 各自独立")
@@ -134,7 +134,7 @@ class TestAgentTrace(unittest.TestCase):
         a = Agent(stream=False)
         obj = MagicMock()
         obj.model_dump.return_value = {"name": "x", "stance": "支持"}
-        with patch("src.agent.ask_structured", new=AsyncMock(return_value=(obj, _resp(content="{}")))):
+        with patch("forge.agent.ask_structured", new=AsyncMock(return_value=(obj, _resp(content="{}")))):
             out = asyncio.run(a.run_structured("任务", object))
         self.assertIsNotNone(out)
         types = [e["type"] for e in a.tracer.events]
@@ -146,7 +146,7 @@ class TestAgentTrace(unittest.TestCase):
         # 连续 3 次相同工具调用 → 强制回答收敛（防死循环路径），run_end 必须收尾
         a = Agent(stream=False)
         r = _resp(tool_calls=[_tc("calculator", '{"expression":"1+1"}')])
-        with patch("src.agent.chat", new=AsyncMock(return_value=r)):
+        with patch("forge.agent.chat", new=AsyncMock(return_value=r)):
             out = asyncio.run(a.run("任务"))
         self.assertEqual(out, "", "强制回答后模型仍回 tool_calls → 兜底返回 content")
         types = [e["type"] for e in a.tracer.events]

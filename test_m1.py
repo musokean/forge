@@ -5,9 +5,9 @@ import sys
 
 sys.path.insert(0, ".")
 
-from src.tools import is_write, TOOLS
-from src.agent import Agent, _estimate_tokens
-from src.config import load_config
+from forge.tools import is_write, TOOLS
+from forge.agent import Agent, _estimate_tokens
+from forge.config import load_config
 
 
 def test_readonly():
@@ -42,7 +42,7 @@ def test_fallback_config():
       ② 配了 fallback（字符串别名 / dict 两种写法）→ 必须能解析出来；
       ③ 没配 → 降级链退化为「仅主角色」，合法。
     """
-    from src.llm import _fallback_role
+    from forge.llm import _fallback_role
 
     cfg = load_config()
     roles = cfg.get("roles", {}) or {}

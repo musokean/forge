@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, patch
 
 sys.path.insert(0, ".")
 
-from src.circuit import (
+from forge.circuit import (
     CircuitBreaker,
     CircuitRegistry,
     CircuitOpenError,
@@ -125,7 +125,7 @@ _CGFG = {
 class TestChatIntegration(_Isolated, unittest.IsolatedAsyncioTestCase):
     async def test_breaker_skips_failed_role_then_fallback(self):
         reset_circuit_registry()
-        from src import llm
+        from forge import llm
 
         async def fake_call(c, messages, role, tools=None, retries=3):
             if role == "default":
@@ -155,7 +155,7 @@ class TestChatIntegration(_Isolated, unittest.IsolatedAsyncioTestCase):
             },
             "circuit_breaker": {"failure_threshold": 1, "cooldown": 30},
         }
-        from src import llm
+        from forge import llm
 
         async def fake_call(c, messages, role, tools=None, retries=3):
             raise RuntimeError("boom")
@@ -184,7 +184,7 @@ class TestStreamChatIntegration(_Isolated, unittest.IsolatedAsyncioTestCase):
             },
             "circuit_breaker": {"failure_threshold": 1, "cooldown": 30},
         }
-        from src import llm
+        from forge import llm
 
         bad_client = AsyncMock()
         bad_client.chat.completions.create = AsyncMock(side_effect=RuntimeError("conn"))
