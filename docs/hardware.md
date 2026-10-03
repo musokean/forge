@@ -6,11 +6,11 @@
 ```
 Agent 工具层      tools.py: device_status / device_power / device_level / device_reset
     ↓
-控制平面          src/hwcontrol.py   资产目录 · 策略引擎 · 命令状态机（Created→Sent→Accepted→Applied）
+控制平面          forge/hwcontrol.py   资产目录 · 策略引擎 · 命令状态机（Created→Sent→Accepted→Applied）
     ↓
-协议              src/hwproto.py     line-JSON + CRC + seq/ack/state（协议 v1）
+协议              forge/hwproto.py     line-JSON + CRC + seq/ack/state（协议 v1）
     ↓
-传输              src/hwtransport.py 串口(pyserial) / MQTT(paho) / 内存
+传输              forge/hwtransport.py 串口(pyserial) / MQTT(paho) / 内存
     ↓
 设备              device_sim.py（模拟） · hardware/esp32_beauty_device.ino（真机骨架）
 ```
