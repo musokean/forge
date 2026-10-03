@@ -84,7 +84,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 handcraft-agent/
 ├── config/models.yaml    # all configuration (models/roles/debate/router/kb)
 ├── config/golden.yaml    # golden-set eval cases
-├── src/
+├── forge/
 │   ├── agent.py          # ReAct loop + context mgmt + status bar + approval
 │   ├── llm.py            # openai gateway + retry + fallback + streaming + breaker
 │   ├── tools.py          # 20 tools + read-only tiers + KB tools
