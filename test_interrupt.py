@@ -141,6 +141,48 @@ class TestStreamInterrupt(unittest.TestCase):
         self.assertIn("已生成一半", out)
         self.assertIn("已中断", out)
 
+    def test_slow_first_token_is_not_reported_as_model_failure(self):
+        """首字慢于 0.5s 轮询窗口时，**不能把异步生成器打坏**。
+
+        2026-09-29 实测（语音场景必现）：老实现用 `asyncio.wait_for(it.__anext__(), 0.5)`，
+        超时会 cancel 掉 `__anext__()` → 异步生成器被破坏 → 下一次读取抛 StopAsyncIteration
+        → agent 把它当异常吞掉，误报「⚠ 模型调用失败（端点 …）」。修法：把「取下一块」
+        做成 task 并用 asyncio.wait 等（超时只轮询打断，不 cancel）。
+        """
+        from src import agent as agent_mod
+        a = self._mk_agent()
+
+        def slow_stream(*args, **kwargs):
+            async def gen():
+                await asyncio.sleep(0.7)          # 比 0.5s 轮询窗口慢
+                yield _mk_delta(content="慢首字也拿到了"), None
+            return gen()
+
+        with patch.object(agent_mod, "stream_chat", new=slow_stream), \
+             patch.object(agent_mod, "poll_key", side_effect=lambda: None), \
+             patch.object(agent_mod, "resolve_model", return_value={"base_url": "http://x"}):
+            out = asyncio.run(a.run("问题"))
+        self.assertIn("慢首字也拿到了", out)
+        self.assertNotIn("模型调用失败", out)
+
+    def test_interrupt_during_slow_first_token(self):
+        """首字等待期间按 Esc 仍能打断（轮询窗口内可打断是当初设计的目的）。"""
+        from src import agent as agent_mod
+        a = self._mk_agent()
+
+        def slow_stream(*args, **kwargs):
+            async def gen():
+                await asyncio.sleep(0.7)
+                yield _mk_delta(content="不该出现"), None
+            return gen()
+
+        poll = iter(["ESC"])
+        with patch.object(agent_mod, "stream_chat", new=slow_stream), \
+             patch.object(agent_mod, "poll_key", side_effect=lambda: next(poll, None)), \
+             patch.object(agent_mod, "resolve_model", return_value={"base_url": "http://x"}):
+            out = asyncio.run(a.run("问题"))
+        self.assertIn("已中断", out)
+
     def test_guide_redirects_regeneration(self):
         """生成中按任意键 + 输入引导 → 重新生成，返回引导后的答案。"""
         from src import agent as agent_mod

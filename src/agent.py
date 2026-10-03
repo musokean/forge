@@ -55,6 +55,8 @@ class Agent:
         self.messages = [{"role": "system", "content": self._system}]
         self.total_tokens = {"prompt": 0, "completion": 0}  # token 统计（A09）
         self._interrupts = 0  # 流式生成被打断次数（连续打断防死循环）
+        self._on_delta = None      # 增量文本回调（#11 语音：边生成边切句边合成）
+        self._interrupt_check = None  # 额外打断来源（#11 语音：检测到用户说话就抢话）
         # #7 trace：每角色/每步可观测（A09 补全）
         m = resolve_model(self.cfg, role)
         self.tracer = Tracer(agent_name=name, role=role, model=m.get("model"))
@@ -285,9 +287,17 @@ class Agent:
 
     # ---------- 核心循环 ----------
 
-    async def run(self, task: str) -> str:
+    async def run(self, task: str, on_delta=None, interrupt_check=None) -> str:
+        """执行一轮（含工具循环）。
+
+        on_delta(chunk)      : 每个**正文**增量到达时回调（#11 语音用它做句级 TTS 流水线）
+        interrupt_check()    : 额外的打断来源，返回 True 表示打断（#11 语音用它做「抢话」）。
+                               与 Esc 中断同一套语义：返回已生成内容。
+        """
         self.messages.append({"role": "user", "content": task})
         self._interrupts = 0  # 每次 run 重置打断计数
+        self._on_delta = on_delta
+        self._interrupt_check = interrupt_check
         await self._maybe_roll_summary()  # 预算高时先滚动摘要（A05b），兜底硬截断
         # —— 可观测：本次回复的计时与 token 快照（A09）——
         self._tok_before = dict(self.total_tokens)
@@ -376,8 +386,17 @@ class Agent:
                 it = stream.__aiter__()
 
                 def _check_key():
-                    """打断检测：Esc 中断 / 任意键进入引导。返回 True 表示已打断。"""
+                    """打断检测：语音抢话 / Esc 中断 / 任意键进入引导。返回 True 表示已打断。"""
                     nonlocal interrupted, guide_text, spin
+                    if self._interrupt_check is not None:      # #11 语音：用户开口即抢话
+                        try:
+                            if self._interrupt_check():
+                                interrupted = True
+                                spinner_stop(spin)
+                                spin = None
+                                return True
+                        except Exception:
+                            pass
                     if not (self.show_spinner and not self._explicit_prompt):
                         return False
                     k = poll_key()
@@ -394,20 +413,30 @@ class Agent:
                         return True
                     return False
 
+                pending = None      # 未完成的「取下一块」任务（超时不取消它，避免打坏异步生成器）
                 while True:
-                    # 首字阶段：0.5s 超时轮询，让等待期可打断
-                    if self._ttft is None:
-                        try:
-                            delta, usage = await asyncio.wait_for(it.__anext__(), timeout=0.5)
-                        except asyncio.TimeoutError:
-                            if _check_key():
-                                break
-                            continue
-                    else:
-                        try:
-                            delta, usage = await it.__anext__()
-                        except StopAsyncIteration:
-                            break
+                    try:
+                        if pending is None:
+                            pending = asyncio.ensure_future(it.__anext__())
+                        if self._ttft is None:
+                            # 首字阶段：0.5s 超时轮询，让等待期可打断。
+                            # **必须用 asyncio.wait 而不是 wait_for**：wait_for 超时会 cancel 掉
+                            # `__anext__()`，把异步生成器打坏 → 下一次读取抛 StopAsyncIteration，
+                            # 整个调用被误报成「模型调用失败」（2026-09-29 语音场景实测踩到：
+                            # 首字迟迟不来时必现）。改成把任务留着，超时只轮询打断。
+                            done, _ = await asyncio.wait([pending], timeout=0.5)
+                            if not done:
+                                if _check_key():
+                                    pending.cancel()
+                                    break
+                                continue
+                            delta, usage = pending.result()
+                        else:
+                            delta, usage = await pending
+                        pending = None
+                    except StopAsyncIteration:
+                        pending = None
+                        break
                     # 后续 chunk 间也轮询（边生成边可打断）
                     if _check_key():
                         break
@@ -435,6 +464,11 @@ class Agent:
                             content_started = True
                         content_parts.append(c)
                         print(c, end="", flush=True)
+                        if self._on_delta is not None:          # #11 语音：边生成边送出切句
+                            try:
+                                self._on_delta(c)
+                            except Exception:
+                                pass
                     for tc in getattr(delta, "tool_calls", None) or []:
                         acc = tool_calls_acc.setdefault(tc.index, {"id": "", "name": "", "arguments": ""})
                         if tc.id:
@@ -452,7 +486,9 @@ class Agent:
                 self._print_status()
                 self._finish_trace()
                 ep = resolve_model(self.cfg, self.role).get("base_url", "?")
-                return f"⚠ 模型调用失败（端点 {ep}）：{e}（已重试并尝试降级通道，请检查端点/余额/网络，或 /config 切换模型）"
+                detail = f"{type(e).__name__}: {e}" if str(e) else type(e).__name__
+                _log("ERROR", "llm_call_failed", run_id=self._run_id, endpoint=ep, error=detail)
+                return (f"⚠ 模型调用失败（端点 {ep}）：{detail}（已重试并尝试降级通道，请检查端点/余额/网络，或 /config 切换模型）")
             finally:
                 if stream is not None:
                     try:

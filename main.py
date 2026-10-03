@@ -1460,15 +1460,38 @@ async def _repl() -> None:
 def main() -> None:
     # 启动参数：
     #   forge --web [--port 8000]   起 Web 聊天界面（零依赖 HTTP 服务，浏览器访问）
-    #   forge --voice               语音对话模式（STT → Agent → TTS，需装语音依赖）
+    #   forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-loop]
+    #                 [--voice-sink speaker|null] [--barge-ms N] [--stt-model NAME]
+    #                 [--voice-phase1]
+    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
+    #                               --audio-source file:xx.wav = 不用麦克风也能跑完整链路（自测/回归）
     #   forge --serve [--port 8080] HTTP API 服务（FastAPI 多会话 + 鉴权，需 server 可选依赖）
     #   forge "问题"                 单次问答
     #   forge                       交互式对话
     if len(sys.argv) > 1 and sys.argv[1] == "--voice":
-        agent = Agent(stream=False, show_spinner=False)
+        argv = sys.argv[2:]
+
+        def _opt(name, default=None, cast=str):
+            if name in argv:
+                try:
+                    return cast(argv[argv.index(name) + 1])
+                except (ValueError, IndexError):
+                    return default
+            return default
+
+        _phase1 = "--voice-phase1" in sys.argv
+        # Phase 2/3 要**流式**跑：模型的增量文本正是「边生成边切句边合成」的输入（2026-09-29 修）
+        agent = Agent(stream=not _phase1, show_spinner=False)
         from src.voice import run_voice
 
-        run_voice(agent)
+        run_voice(agent,
+                  audio_source=_opt("--audio-source", "mic"),
+                  rounds=_opt("--voice-rounds", 0, int) or 0,
+                  sink=_opt("--voice-sink", "speaker"),
+                  barge_ms=_opt("--barge-ms", 300, int) or 300,
+                  stt_model=_opt("--stt-model", "base"),
+                  stream=not _phase1,
+                  file_loop=("--voice-loop" in argv))     # 文件源循环（多轮回归用）
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000
