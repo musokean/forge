@@ -159,6 +159,20 @@ class TestReferenceTap(unittest.TestCase):
         self.assertAlmostEqual(float(np.abs(got).sum()), 0.0, places=6)
 
 
+class _VClock:
+    """虚拟时钟：与样本计数**严格同步**（t0 + 已读样本数/采样率）。
+
+    用它的理由：`MicListener` 现在按「块的采集时刻」取参考，若时间戳来自真实墙钟，
+    合成用例就会受机器负载影响而 flaky（2026-10-03 实测：三次跑挂一次）。替身共用同一虚拟
+    时间轴后，源/汇/监听三方的时间戳完全一致 → 确定性可复现，同时保留真实节流节奏。
+    """
+
+    def __init__(self, t0=1_000_000.0):
+        self.t = float(t0)
+        self.t0 = float(t0)
+
+    def __call__(self):
+        return self.t
 class _EchoSource:
     """假麦克风：录到的是「自己刚播出去的声音的回声」（+ 可选的人声）—— 复现外放自激。
 
@@ -169,13 +183,17 @@ class _EchoSource:
     samplerate = SR
     block_ms = 100
 
-    def __init__(self, tap, echo_gain=0.6, echo_delay_ms=20, near_end_at=None, near_end_len=1.0):
+    def __init__(self, tap, echo_gain=0.6, echo_delay_ms=20, near_end_at=None, near_end_len=1.0,
+                 clock=None):
+        self.clock = clock
         self.tap = tap
         self.echo_gain = echo_gain
         self.echo_delay_s = echo_delay_ms / 1000.0
         self.near_end_at = near_end_at            # (起始秒, 持续秒) 或 None
         self.near_end_len = near_end_len
-        self.near = speech_like(int(SR * near_end_len), amp=0.3)
+        # 人声幅度必须**明显高于回声**：真机场景人声比回声响 20dB 以上；
+        # 若测试里只高 1.4 倍，任何合理阈值都无法既压回声又保住插话（2026-10-03 踩到）。
+        self.near = speech_like(int(SR * near_end_len), amp=0.9)
         self.t0 = None
         self.n = 0
         self.block_frames = int(SR * self.block_ms / 1000)
@@ -193,7 +211,10 @@ class _EchoSource:
             if gap > 0:
                 time.sleep(gap)
         now = time.monotonic()
-        if self.t0 is None:
+        if self.clock is not None:                     # 虚拟时间轴：与已读样本数严格同步
+            self.clock.t = self.clock.t0 + (self.n + frames) / SR
+            now = self.clock()
+        if self.t0 is None:                            # t0 必须与 now **同一时间轴**（都虚拟或都真实）
             self.t0 = now
         # 与**真实设备**一致：按「这一块的采集时刻」去参考里取当时正播出去的音频（延迟 + 衰减）。
         # 2026-10-03 改：原来用 stream()（样本计数游标）—— 那只在「假播放也按样本计数推进」时自洽，
@@ -202,7 +223,8 @@ class _EchoSource:
         out = echo.copy()
         if self.near_end_at is not None:
             start, dur = self.near_end_at
-            el = now - self.t0
+            el = self.n / SR          # 用**样本计数**做时间基准：与虚拟时间轴天然一致，
+            #                           不受「真实/虚拟时钟混用」影响（2026-10-03 替身踩到）
             if start <= el < start + dur:
                 a = int((el - start) * SR)
                 seg = self.near[a:a + frames]
@@ -217,9 +239,10 @@ class _EchoSource:
 class _RecordingSink(NullSink):
     """模拟「播放」：把播出去的样本推给参考 tap（等价于 SoundDeviceSink 的参考通路）。"""
 
-    def __init__(self, tap, seconds_per_play=6.0):
+    def __init__(self, tap, seconds_per_play=6.0, clock=None):
         super().__init__(seconds_per_play=seconds_per_play)
         self.tap = tap
+        self.clock = clock
         self._t = None
 
     def play(self, path):
@@ -230,7 +253,7 @@ class _RecordingSink(NullSink):
         # 若只推 2s，慢读索取的窗口就会落在音频之外 → 参考变静音 → AEC 失效（用例假挂）
         pcm = speech_like(int(SR * max(self.seconds_per_play, 6.0)), amp=0.35)
         blk = max(1, int(SR * 0.1))
-        t0 = time.monotonic()
+        t0 = self.clock.t0 if self.clock is not None else time.monotonic()
         for i in range(0, pcm.size, blk):
             self.tap.push(pcm[i:i + blk], t=t0 + i / SR)
         return handle
@@ -242,19 +265,21 @@ class TestAecInLoop(unittest.TestCase):
 
     def _drive(self, aec_on, near_end_at):
         tap = ReferenceTap(samplerate=SR, capacity_s=10.0)
-        sink = _RecordingSink(tap, seconds_per_play=2.0)
-        src = _EchoSource(tap, near_end_at=near_end_at)
+        clock = _VClock()                              # 三方共用同一虚拟时间轴（确定性）
+        sink = _RecordingSink(tap, seconds_per_play=2.0, clock=clock)
+        src = _EchoSource(tap, near_end_at=near_end_at, clock=clock)
         aec = NlmsAec(samplerate=SR, frame_ms=20, filter_ms=120) if aec_on else None
         # 用**真实 `--aec` 的那套组合**：AEC + 残余抑制器（非线性路径上真正干活的是后者）。
         # 2026-10-03 真机结论：本机喇叭→麦克风是非线性路径，线性 AEC 消不掉，靠抑制器压住。
         sup = ResidualSuppressor(samplerate=SR) if aec_on else None
         listener = MicListener(src, EnergyVAD(threshold=0.05, silence_ms=300, min_speech_ms=200),
                                barge_ms=300, aec=aec, ref_tap=tap if aec_on else None,
-                               aec_lead_ms=20, suppressor=sup)
+                               aec_lead_ms=20, suppressor=sup, clock=clock)
         listener.start()
         # 先让它「播」一段（tap 里因此有内容 → 假麦克风会录到回声）
         played = sink.play("x.mp3")
-        time.sleep(1.2)
+        # 跑 2.6s：让「在线延迟估计 + 抑制器校准」都收敛，断言才稳定（1.2s 时两者都还在热身期）
+        time.sleep(2.6)
         barge = listener.barge_in
         played.stop()
         listener.stop()
@@ -272,7 +297,7 @@ class TestAecInLoop(unittest.TestCase):
 
     def test_real_speech_still_barges_with_aec(self):
         """AEC 开着，但真人说话 → 必须照样被听到（否则 AEC 把用户也消了）。"""
-        barge, _ = self._drive(aec_on=True, near_end_at=(0.3, 1.0))
+        barge, _ = self._drive(aec_on=True, near_end_at=(1.5, 1.0))
         self.assertTrue(barge, "真人插话必须仍能触发（AEC 只该消回声）")
 
 

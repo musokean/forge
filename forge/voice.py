@@ -629,7 +629,7 @@ class MicListener:
 
     def __init__(self, source: AudioSource, vad: EnergyVAD = None, barge_ms: int = 300,
                  aec: "AecEngine" = None, ref_tap=None, aec_lead_ms: int = 120,
-                 suppressor: "ResidualSuppressor" = None):
+                 suppressor: "ResidualSuppressor" = None, clock=None):
         self.source = source
         self.vad = vad or EnergyVAD()
         self.barge_ms = barge_ms
@@ -644,6 +644,9 @@ class MicListener:
         # PortAudio 报的输入 latency（26ms）远不够 → 用包络互相关在线量出来（见 DelayTracker）
         self.delay_tracker = DelayTracker(samplerate=source.samplerate) if aec is not None else None
         self.measured_lead_ms = None
+        # 取参考用的时钟：默认墙钟；测试可注入**与样本计数严格同步的虚拟时钟**，
+        # 否则「按采集时刻取参考」这条路在负载下无法确定性复现（2026-10-03 用例 flaky 的根因）
+        self._clock = clock if clock is not None else time.monotonic
         self.events = queue.Queue()
         self._frames = []                 # 当前这句话的音频
         self._lock = threading.Lock()
@@ -671,7 +674,7 @@ class MicListener:
                     # ★ 立刻记下这一块的采集时刻：参考必须按**实际采集时间**取，不能用自由漂移的游标
                     #   （游标假设「每次调用都恰好推进 n 个样本」，一旦某块读慢/被丢就永久偏掉；
                     #    2026-10-03 真机探针实测：参考与真实回声系统性错位，AEC 因此从未生效）
-                    cap_t = time.monotonic()
+                    cap_t = self._clock()
                 except Exception as e:                       # 源结束/设备异常
                     self.events.put(VadEvent(SPEECH_END))
                     self.closed = True
