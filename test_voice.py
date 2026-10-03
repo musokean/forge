@@ -385,6 +385,22 @@ class TestStreamingSpeaker(unittest.TestCase):
         self.assertEqual(tts.texts, ["第一句。", "第二句。", "第三句。"])
         self.assertEqual(len(sink.played), 3)
         sp.close()
+    def test_stop_before_start_does_not_silence_next_turn(self):
+        """回归：线程还没起来时被 `stop()` 过，不该让下一轮变哑。
+
+        2026-09-29 抓到的真 bug：`stop()` 往队列塞哨兵 `None` → 下一轮 `start()` 起线程后
+        立刻吃到哨兵退出 → 整段回答无声（`sink.played == 0`）。PTT 在**第一轮之前**按一下键
+        就会走到这个时序，所以它不是一个只在测试里才会出现的边角。
+        """
+        sink = NullSink(audio_len=lambda p: 0.05)
+        speaker = StreamingSpeaker(_QuietTTS(), sink)
+        speaker.stop()                       # 线程尚未启动就打断（PTT 首按的时序）
+        speaker.start()                      # 新一轮
+        speaker.say("第一句。")
+        self.assertTrue(speaker.finish(timeout=2.0), "队列应能排空（工作线程没被哨兵毒死）")
+        self.assertEqual(len(sink.played), 1, "这一句必须真的播出去")
+        speaker.close()
+
 
     def test_stop_interrupts_and_drops_queue(self):
         tts, sink = _QuietTTS(), NullSink(audio_len=lambda p: 0.6)   # 每句"播"0.6s
@@ -593,8 +609,134 @@ class TestFileSource(unittest.TestCase):
         src.close()
 
 
-if __name__ == "__main__":
-    unittest.main(verbosity=2)
+class ScriptedGate:
+    """假的「按住说话」状态源（PTT 测试用；真键盘是 `KeyHold`）。
+
+    spans = [(起始秒, 是否按住), ...] 按时间升序 —— 时间一到就切换，
+    这样「按下 → 说 → 松开」的时序在 CI 里可复现，不需要真按键。
+    """
+
+    def __init__(self, spans):
+        self.spans = spans
+        self.t0 = None
+
+    def held(self):
+        if self.t0 is None:
+            self.t0 = time.time()
+        now = time.time() - self.t0
+        held = False
+        for s, h in self.spans:
+            if now >= s:
+                held = h
+        return held
+
+
+@needs_numpy
+class TestNoHeadphoneModes(unittest.TestCase):
+    """**不用耳机也能用**：半双工（播放时闭麦）与按住说话（PTT）。
+
+    背景：外放时喇叭里的 TTS 会被自己的麦克风听回去 → 被当成新指令 → 自激（2026-09-29 用户问）。
+    方案：① 半双工 = 它说话时闭麦，防自激（代价：播放时不能插话，生成时仍可插话）；
+         ② PTT = 不按不采集，按下即打断、松开即提交（完全不用耳机也能随时插话）。
+    """
+
+    def _run(self, script, stt, agent, rounds=1, sink=None, vad_kw=None, barge_ms=300,
+             timeout_s=6.0, half_duplex=False, ptt=None, pace=0.1):
+        vad_kw = dict(vad_kw or {})
+        vad_kw.setdefault("threshold", 0.05)
+        vad_kw.setdefault("silence_ms", 300)
+        vad_kw.setdefault("min_speech_ms", 200)
+        src = ScriptedSource(script, block_ms=100, amp=0.3, pace=pace)
+        listener = MicListener(src, EnergyVAD(**vad_kw), barge_ms=barge_ms)
+        events = []
+        stats = asyncio.run(streaming_voice_loop(
+            agent, stt, _QuietTTS(), listener=listener,
+            sink=sink or NullSink(audio_len=lambda p: 0.05),
+            max_rounds=rounds, timeout_s=timeout_s, barge_ms=barge_ms,
+            half_duplex=half_duplex, guard_ms=0, ptt=ptt, on_event=events.append))
+        return stats, events, listener
+
+    # ── 半双工（播放期间闭麦）──
+    def test_half_duplex_does_not_hear_itself(self):
+        """它说话时喇叭声被麦克风收回去 —— 半双工下不该被当成插话、也不该多出一轮。"""
+        sink = NullSink(audio_len=lambda p: 0.5)          # 每句播 0.5s，播放窗口够长
+        stt = _SeqSTT(finals=["第一个问题", "这是回声不该被识别"])
+        agent = _ScriptAgent(answer="第一句。第二句。第三句。第四句。", chunk=4, delay=0.02)
+        stats, events, _ = self._run(
+            [("speech", 0.6), ("silence", 0.4),
+             ("speech", 1.5), ("silence", 0.8)],         # ← 落在「播放中」＝回声
+            stt, agent, sink=sink, half_duplex=True, timeout_s=4.0)
+        self.assertEqual(stats["transcripts"], ["第一个问题"], "播放期间的输入（回声）不该进第二轮")
+        self.assertEqual(stats["barge_ins"], 0, "闭麦期间不该判抢话")
+        self.assertEqual(stt.final_calls, 1, "只该转写一次（用户那一句）")
+
+    def test_half_duplex_still_interrupts_while_generating(self):
+        """生成期间（喇叭还没出声、不存在回声）插话仍然能打断 —— 半双工只闭「播放」那一段。"""
+        sink = NullSink(audio_len=lambda p: 0.2)
+        stt = _SeqSTT(finals=["第一个问题"])
+        agent = _ScriptAgent(answer="一句。二句。三句。四句。五句。", chunk=3, delay=0.35)
+        stats, events, _ = self._run(
+            [("speech", 0.6), ("silence", 0.4),
+             ("speech", 0.6), ("silence", 0.3)],
+            stt, agent, sink=sink, half_duplex=True, timeout_s=5.0)
+        self.assertGreaterEqual(stats["barge_ins"], 1, "生成期的插话应该仍然生效")
+
+    def test_muted_listener_drops_audio(self):
+        """闭麦 = 当没听见：不产生事件、也不攒音频；开麦后恢复检测。"""
+        # 实时速度（pace=0.1）：否则源会被瞬间读完，开麦后已没有声音可检测
+        src = ScriptedSource([("speech", 2.0), ("silence", 0.5)], block_ms=100, amp=0.3, pace=0.1)
+        lis = MicListener(src, EnergyVAD(threshold=0.05, silence_ms=300, min_speech_ms=200)).start()
+        lis.set_muted(True)
+        time.sleep(0.4)
+        self.assertEqual(lis.drain_events(), [], "闭麦期间不该有事件")
+        self.assertEqual(len(lis.peek_audio() or []), 0, "闭麦期间不该攒音频")
+        lis.set_muted(False)
+        got = []
+        self.assertTrue(_wait_for(lambda: got.extend(lis.drain_events()) or
+                                  any(e.kind == SPEECH_START for e in got), timeout=2.0),
+                        "开麦后应重新开始检测")
+        lis.stop()
+
+    # ── 按住说话（PTT）──
+    def test_ptt_hold_produces_one_turn(self):
+        """按住一次 = 一轮对话；不按的那段时间（哪怕有声音）不算输入。"""
+        sink = NullSink(audio_len=lambda p: 0.05)
+        stt = _SeqSTT(finals=["按键说的话"])
+        agent = _ScriptAgent(answer="好的。", chunk=3, delay=0.0)
+        gate = ScriptedGate([(0.4, True), (1.3, False)])
+        stats, events, _ = self._run(
+            [("silence", 0.4), ("speech", 0.8), ("silence", 1.2)],
+            stt, agent, sink=sink, ptt=gate, timeout_s=4.0)
+        kinds = [e.kind for e in events]
+        self.assertIn("ptt_down", kinds)
+        self.assertIn("ptt_up", kinds)
+        self.assertEqual(stats["rounds"], 1, "按住一次 = 一轮")
+        self.assertEqual(stats["transcripts"], ["按键说的话"])
+        self.assertEqual(stt.final_calls, 1)
+
+    def test_ptt_press_interrupts_playback(self):
+        """按下 = 立刻打断它正在说的（这就是免耳机时的「插话」）。"""
+        sink = NullSink(audio_len=lambda p: 1.2)          # 每句播 1.2s，播放窗口留足
+        stt = _SeqSTT(finals=["第一个问题", "插话内容"])
+        agent = _ScriptAgent(answer="第一句话在这里。第二句话在这里。", chunk=6, delay=0.0)
+        # PTT 模式下**第一轮也要按住**（不按不采集）：0.3-1.1s 说第一句 → 它开始回答并播；
+        # 1.7s 再按住 → 这时正在播 → 应该立刻停（rounds=2 才有第二次按住的时机）
+        gate = ScriptedGate([(0.3, True), (1.1, False), (1.7, True), (2.6, False)])
+        stats, events, _ = self._run(
+            [("silence", 0.2), ("speech", 0.8), ("silence", 0.6), ("speech", 0.6), ("silence", 1.0)],
+            stt, agent, rounds=2, sink=sink, ptt=gate, timeout_s=6.0)
+        kinds = [e.kind for e in events]
+        self.assertEqual(kinds.count("ptt_down"), 2, "两次按住")
+        self.assertTrue(sink.stops, "按下时应立刻停播")
+
+    def test_ptt_too_short_ignored(self):
+        """误碰一下（0.15s）不该触发一轮。"""
+        gate = ScriptedGate([(0.3, True), (0.45, False)])
+        stats, events, _ = self._run(
+            [("silence", 1.6)], _SeqSTT(finals=["不该出现"]), _ScriptAgent(),
+            ptt=gate, timeout_s=2.5)
+        self.assertEqual(stats["rounds"], 0)
+        self.assertIn("too_short", [e.kind for e in events])
 
 
 if __name__ == "__main__":

@@ -506,6 +506,24 @@ class EnergyVAD:
 # ══════════════════════════════════════════════════════════════════
 # 说话期间听麦克风（打断检测 + 保住已说半句）
 # ══════════════════════════════════════════════════════════════════
+class KeyHold:
+    """「按住说话」的按键状态源 —— **可注入**，所以 PTT 逻辑能在 CI 里确定性测（塞个假的）。
+
+    Windows 用 `GetAsyncKeyState` 轮询：它能回答「现在按着吗」，而 `msvcrt` 只给按下事件、
+    判断不了长按。非 Windows / 无 GUI 环境返回 False（PTT 主要用于本地 Windows）。
+    """
+
+    def __init__(self, vk: int = 0x20):           # 0x20 = 空格
+        self.vk = vk
+
+    def held(self) -> bool:
+        try:
+            import ctypes
+            return bool(ctypes.windll.user32.GetAsyncKeyState(self.vk) & 0x8000)
+        except Exception:
+            return False
+
+
 class MicListener:
     """后台线程持续读麦克风：跑 VAD，攒当前这句话的音频，并提供「有人在说话」的即时判断。
 
@@ -527,6 +545,7 @@ class MicListener:
         self.closed = False
         self._prev_block = None           # 上一块（SPEECH_START 时当 pre-roll 用）
         self._utterance = []              # SPEECH_END 时冻结下来的「这一句」（避免缓冲区继续被灌）
+        self._muted = False               # 闭麦：外放时喇叭里的 TTS 会被自己听见（半双工/PTT 用）
 
     # ---- 生命周期 ----
     def start(self):
@@ -544,6 +563,9 @@ class MicListener:
                     self.events.put(VadEvent(SPEECH_END))
                     self.closed = True
                     break
+                with self._lock:
+                    if self._muted:                          # 闭麦：这一块当没听见
+                        continue
                 for ev in self.vad.feed(block, self.source.block_ms):
                     if ev.kind == SPEECH_START:
                         self.speech_ms_run = 0
@@ -571,6 +593,20 @@ class MicListener:
                     self.speech_ms_run = 0
         finally:
             pass
+
+    def set_muted(self, muted: bool):
+        """闭麦 / 开麦。闭麦期间读到的音频**直接丢**：不喂 VAD、不攒缓冲、不判抢话。
+
+        为什么闭麦而不是停采集：设备/流重开有驱动抖动与延迟；而「外放时喇叭里的 TTS
+        被自己的麦克风听见」纯粹是多余输入，丢掉就行（2026-09-29：用户问不用耳机怎么办）。
+        """
+        with self._lock:
+            self._muted = bool(muted)
+        if muted:
+            self.clear()
+            self.vad.reset()
+            self.speech_ms_run = 0
+            self.barge_in = False
 
     def stop(self):
         self._stop.set()
@@ -733,6 +769,14 @@ class StreamingSpeaker:
 
     def start(self):
         self._stop.clear()
+        # 清掉上一轮遗留（**包括 stop() 可能留下的哨兵**）：
+        # 否则新一轮的工作线程一启动就吃到哨兵立刻退出 → 整段回答无声
+        # （2026-09-29 PTT 用例抓到：第一轮之前按一下键就会触发）
+        try:
+            while True:
+                self._q.get_nowait()
+        except queue.Empty:
+            pass
         self.finished.clear()
         self._thread = threading.Thread(target=self._run, daemon=True)
         self._thread.start()
@@ -800,7 +844,8 @@ class StreamingSpeaker:
                 self._q.get_nowait()
         except queue.Empty:
             pass
-        self._q.put(None)
+        if self._thread is not None and self._thread.is_alive():
+            self._q.put(None)          # 哨兵只给活着的线程（线程没起来时塞进去会毒到下一轮）
 
     def finish(self, timeout=60.0) -> bool:
         """等队列排空且当前这句播完（**不是等线程退出**——线程要等 close() 的哨兵）。"""
@@ -927,16 +972,20 @@ def is_exit(text: str) -> bool:
 # Phase 2/3：流式 + 打断
 # ══════════════════════════════════════════════════════════════════
 def await_playback(speaker: "StreamingSpeaker", listener: "MicListener", answer: str,
-                   cap_seconds: float = None) -> bool:
+                   cap_seconds: float = None, extra_check=None) -> bool:
     """等这句话播完，**同时盯着抢话**——用户听的时候插话，必须立刻停播。
 
-    返回 True 表示播放期间被抢话（调用方应 `speaker.stop()` 并把用户那半句当下一轮输入）。
+    `extra_check` 是额外的「立刻打断」来源（PTT 模式传按键状态：**按下即打断**，
+    否则要等当前这句播完才轮到按键轮询）。
+    返回 True 表示播放期间被打断（调用方应 `speaker.stop()` 并接着处理新输入）。
     """
     if listener.barge_in:
         return True
     end = time.time() + (cap_seconds if cap_seconds else max(10.0, len(answer or "") / 8))
     while time.time() < end:
         if listener.barge_in:
+            return True
+        if extra_check is not None and extra_check():
             return True
         if speaker.finish(timeout=0.05):          # 队列排空且当前句播完
             return False
@@ -959,8 +1008,17 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                                source: AudioSource = None, sink: AudioSink = None,
                                listener: MicListener = None, splitter: SentenceSplitter = None,
                                keep_alive: bool = True, max_rounds: int = 0,
-                               on_event=None, barge_ms: int = 300, timeout_s: float = 60.0) -> dict:
+                               on_event=None, barge_ms: int = 300, timeout_s: float = 60.0,
+                               half_duplex: bool = False, guard_ms: int = 300,
+                               ptt=None) -> dict:
     """Phase 2/3 主循环：流式转写 → 流式应答（句级合成播放）→ 播放期间可抢话。
+
+    **不用耳机也能用的两种模式**（默认全双工 = 假设你戴了耳机）：
+    · `half_duplex=True`：**播放期间闭麦**（外放时喇叭里的 TTS 会被自己的麦克风听见 →
+      自激：它把自己的话当新指令）。代价是播放时不能插话；**生成期间仍可插话**
+      （那时喇叭还没出声，不存在回声）。`guard_ms` = 停播后等喇叭余音散掉的静默期。
+    · `ptt=<KeyHold>`：**按住说话** —— 不按不采集；按下 = 打断正在说的 + 开麦；松开 = 提交这一句。
+      完全不用耳机也能随时插话；句子边界是「松手」而不是 VAD。
 
     返回统计 dict（轮数 / 打断次数 / 事件数），测试与 CLI 都用它判断。
     """
@@ -985,6 +1043,11 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
     listener.start()
     splitter = splitter or SentenceSplitter()
     speaker = StreamingSpeaker(tts, sink or NullSink())
+    ptt_down = False
+    if ptt is not None:                     # PTT：不按不采集（外放也不会听自己）
+        listener.set_muted(True)
+
+    carry = {}          # 半双工：闭麦会清掉缓冲，抢话时先把用户那半句接住（见下）
 
     async def _turn(text):
         """一轮应答：边生成边切句边播；返回 (answer, 是否被抢话)。
@@ -1012,7 +1075,17 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
             speaker.say(sentence)
 
         # 生成期没被抢话 → 边播边继续盯（**播放期间插话才是最常发生的**）
-        hit = listener.barge_in or await_playback(speaker, listener, answer)
+        hit = listener.barge_in             # **先读再闭麦**：闭麦会清掉抢话标记与缓冲
+        if hit:
+            carry["pending"] = listener.take_utterance()   # 用户那半句先接住，别被闭麦清掉
+        if half_duplex:
+            listener.set_muted(True)        # 外放：喇叭在响，别把自己的声音当用户
+        hit = hit or await_playback(speaker, listener, answer,
+                                    extra_check=(ptt.held if ptt is not None else None))
+        if half_duplex:
+            if guard_ms:
+                await asyncio.sleep(guard_ms / 1000.0)      # 等喇叭余音散掉再开麦
+            listener.set_muted(False)
         if hit:
             stats["barge_ins"] += 1
             speaker.stop()
@@ -1021,6 +1094,31 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
             emit("answer_done", answer=answer)
         stats["answers"].append(answer)
         return answer, hit
+
+    async def _respond(text):
+        """一轮输入 → 一轮应答（含抢话后接着说的那一轮）。返回 False = 该退出了。"""
+        stats["transcripts"].append(text)
+        emit("user", text=text)
+        if is_exit(text):
+            emit("exit")
+            return False
+        _answer, hit = await _turn(text)
+        # 抢话后：用户那半句已经被 listener 收着 → 直接进下一轮（不用再说一遍）
+        # PTT 模式除外：下一句由「按键边界」定义，不该把残留音频当输入
+        if hit and ptt is None:
+            pending = carry.pop("pending", None)
+            if pending is None:
+                pending = listener.take_utterance()
+            seconds = len(pending) / listener.source.samplerate if pending is not None else 0.0
+            emit("barge_pending", seconds=round(seconds, 2))
+            if pending is not None and len(pending) > 0:
+                text2 = stt.transcribe(pending).strip()
+                if text2:
+                    stats["transcripts"].append(text2)
+                    emit("user", text=text2)
+                    await _turn(text2)
+        speaker.close()
+        return True
 
     try:
         emit("ready", source=getattr(listener.source, "kind", "?"))
@@ -1031,6 +1129,36 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
             if timeout_s and (time.time() - last_activity) > timeout_s:
                 emit("timeout")
                 break
+            # ── 按住说话（PTT）：不按不采集；按下=打断+开麦；松开=提交这一句 ──
+            if ptt is not None:
+                held = bool(ptt.held())
+                if held and not ptt_down:
+                    ptt_down = True
+                    last_activity = time.time()
+                    listener.clear()
+                    listener.set_muted(False)
+                    speaker.stop()                      # 按下即打断正在说的（这就是插话）
+                    emit("ptt_down")
+                elif ptt_down and not held:
+                    ptt_down = False
+                    audio = listener.take_utterance()   # **先取再闭麦**：闭麦会清掉缓冲
+                    listener.set_muted(True)
+                    secs = (len(audio) / listener.source.samplerate) if audio is not None else 0.0
+                    last_activity = time.time()
+                    emit("ptt_up", seconds=round(secs, 2))
+                    if audio is None or secs < 0.2:
+                        emit("too_short", speech_ms=int(secs * 1000))
+                    else:
+                        text = stt.transcribe(audio).strip()
+                        if not text:
+                            emit("empty")
+                        elif not await _respond(text):
+                            break
+                elif ptt_down:
+                    last_activity = time.time()         # 一直按着不算空闲（别在说话时超时退出）
+                await asyncio.sleep(0.03)               # 30ms 轮询：手感够，不烧 CPU
+                continue
+
             ev = listener.next_event(timeout=0.1)
             if ev is None:
                 continue
@@ -1043,6 +1171,8 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                     if draft:
                         emit("partial", text=draft)
             elif ev.kind == SPEECH_END:
+                if ptt is not None:
+                    continue                    # PTT 模式：句子边界是「松手」，不是 VAD
                 audio = listener.take_utterance()
                 if (ev.elapsed or 0) < 200 or audio is None or len(audio) < int(0.1 * listener.source.samplerate):
                     emit("too_short", speech_ms=ev.elapsed)
@@ -1051,27 +1181,9 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                 if not text:
                     emit("empty")
                     continue
-                stats["transcripts"].append(text)
-                emit("user", text=text)
-                if is_exit(text):
-                    emit("exit")
-                    break
-
                 last_activity = time.time()
-                _answer, hit = await _turn(text)
-
-                # 抢话后：用户那半句已经被 listener 收着 → 直接进下一轮（不用再说一遍）
-                if hit:
-                    pending = listener.take_utterance()
-                    seconds = len(pending) / listener.source.samplerate if pending is not None else 0.0
-                    emit("barge_pending", seconds=round(seconds, 2))
-                    if pending is not None and len(pending) > 0:
-                        text2 = stt.transcribe(pending).strip()
-                        if text2:
-                            stats["transcripts"].append(text2)
-                            emit("user", text=text2)
-                            await _turn(text2)
-                speaker.close()
+                if not await _respond(text):
+                    break
             if not keep_alive and stats["rounds"] >= 1:
                 break
     finally:
@@ -1087,10 +1199,12 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
 
 def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "speaker",
               barge_ms: int = 300, stt: STTEngine = None, tts: TTSEngine = None,
-              stt_model: str = "base", stream: bool = True, file_loop: bool = False) -> dict:
+              stt_model: str = "base", stream: bool = True, file_loop: bool = False,
+              half_duplex: bool = False, ptt: bool = False) -> dict:
     """命令行入口：`forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-sink null]`。
 
     `--audio-source file:xxx.wav` = **不用麦克风也能跑完整语音链路**（L2 自测/回归用）。
+    `--half-duplex` = 外放不用耳机（播放期间闭麦）；`--ptt` = 按住空格说话。
     """
     missing = [m for m in _check_deps() if m not in ("sounddevice",)] if audio_source.startswith("file:") else _check_deps()
     if missing:
@@ -1112,9 +1226,18 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         asyncio.run(voice_loop(agent, stt, tts, keep_alive=True, max_rounds=rounds))
         return {"mode": "phase1"}
     sink_obj = NullSink() if sink == "null" else FFplaySink()
-    print(f"🔊 语音模式（Phase 2/3 流式 + 打断）· 音频源 {audio_source} · 播放 {sink} · 抢话阈值 {barge_ms}ms")
-    print("   （说「退出」/「exit」结束；说话时可直接插话打断）")
+    mode = "按住空格说话（PTT）" if ptt else ("半双工（播放时闭麦）" if half_duplex else "全双工（建议戴耳机）")
+    print(f"🔊 语音模式（Phase 2/3 流式 + 打断）· 音频源 {audio_source} · 播放 {sink} · "
+          f"抢话阈值 {barge_ms}ms · {mode}")
+    if ptt:
+        print("   （不按不采集；**按住空格**说话、松开提交；按下即打断它正在说的。说「退出」结束）")
+    elif half_duplex:
+        print("   （外放模式：它说话时不听麦，防自激；它思考时插话仍可打断。说「退出」结束）")
+    else:
+        print("   （说「退出」/「exit」结束；说话时可直接插话打断；外放请加 --half-duplex 或 --ptt）")
     return asyncio.run(streaming_voice_loop(agent, stt, tts, source=src, sink=sink_obj,
-                                            max_rounds=rounds, barge_ms=barge_ms,
-                                            on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}",
-                                                                      flush=True)))
+                                             max_rounds=rounds, barge_ms=barge_ms,
+                                             half_duplex=half_duplex,
+                                             ptt=KeyHold() if ptt else None,
+                                             on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}",
+                                                                       flush=True)))

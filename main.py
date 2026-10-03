@@ -1462,8 +1462,9 @@ def main() -> None:
     #   forge --web [--port 8000]   起 Web 聊天界面（零依赖 HTTP 服务，浏览器访问）
     #   forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-loop]
     #                 [--voice-sink speaker|null] [--barge-ms N] [--stt-model NAME]
-    #                 [--voice-phase1]
-    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
+    #                 [--voice-phase1] [--half-duplex] [--ptt]
+    #                               --half-duplex = 外放不用耳机（它说话时闭麦，防自激）
+    #                               --ptt         = 按住空格说话（不按不采集，按下即打断）    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
     #                               --audio-source file:xx.wav = 不用麦克风也能跑完整链路（自测/回归）
     #   forge --serve [--port 8080] HTTP API 服务（FastAPI 多会话 + 鉴权，需 server 可选依赖）
     #   forge "问题"                 单次问答
@@ -1491,7 +1492,9 @@ def main() -> None:
                   barge_ms=_opt("--barge-ms", 300, int) or 300,
                   stt_model=_opt("--stt-model", "base"),
                   stream=not _phase1,
-                  file_loop=("--voice-loop" in argv))     # 文件源循环（多轮回归用）
+                  file_loop=("--voice-loop" in argv),     # 文件源循环（多轮回归用）
+                  half_duplex=("--half-duplex" in argv),  # 外放不用耳机：播放期间闭麦（防自激）
+                  ptt=("--ptt" in argv))                  # 按住空格说话：不用耳机也能随时打断
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000
