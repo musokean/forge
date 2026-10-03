@@ -1439,6 +1439,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         return {"mode": "phase1"}
     aec_engine = None
     ref_tap = None
+    suppressor = None          # AEC 关闭时为空（否则下面调用处 UnboundLocalError）
     if aec and str(aec).lower() not in ("none", "off", "0"):
         # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
         aec_engine = make_aec(aec, samplerate=16000)
