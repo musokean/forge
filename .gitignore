@@ -17,3 +17,5 @@ push_github.cmd
 # 本地构建产物（pip install -e . / 打包产生，不进库）
 build/
 dist/
+# QA 截图/临时产物（不进仓库）
+_shots/
