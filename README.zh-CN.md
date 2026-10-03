@@ -1,4 +1,11 @@
-# forge · 把想法锻造成现实
+# forge
+
+**一个你读得完的 ReAct 智能体 —— 步进循环约 235 行直白 Python，另外 31 个模块是可跳过的可选层。**
+
+**零重依赖**（标准库 + `openai` + `pyyaml`）。每个机制都摊开写，不藏着：重试 · 降级回退 · 熔断 · 写操作审批闸门 · 命令沙箱 · 结构化日志 · 四角色 Computer Use 循环。任何 OpenAI 兼容端点都能接 —— DeepSeek、通义千问、vLLM、Ollama、本地模型。
+
+<!-- 录好 GIF 后取消这行注释、并删掉本注释：![forge REPL —— 提问、看执行轨迹、生成中随时打断](docs/assets/forge-cli.gif) -->
+
 
 [![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
