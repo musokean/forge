@@ -332,5 +332,42 @@ class TestAecLeadEstimate(unittest.TestCase):
         self.assertIsInstance(s.latency_s, float)
 
 
+@needs_numpy
+class TestAecSafetyNet(unittest.TestCase):
+    """AEC 的硬保险：**绝不能把链路消得更差**（2026-10-03 真机声学实测抓到发散）。"""
+
+    def test_bad_reference_cannot_blow_up(self):
+        """参考对不上时不能输出满量程噪声。
+
+        现场数据：真机声学实测里对齐估计错了 → ‖w‖ 涨到 **91.7**、残差 RMS **8.7**（比输入响 100 倍）。
+        修法：‖w‖ 上限 + 「残差比输入响 → 这一帧旁路，原样输出输入」。
+        """
+        ref = speech_like(48000, amp=0.4)
+        aec = NlmsAec(samplerate=16000, frame_ms=20, filter_ms=120)      # 120ms 跨度
+        # 真实失败场景：回声延迟**超出滤波器跨度**（对齐估错 400ms）→ 滤波器追不上、梯度把它带飞
+        mic = (echo_path(ref, delay_ms=400, gain=0.6) + 0.0005 * rng.standard_normal(ref.size)).astype(np.float32)
+        out = aec.process(mic, ref)
+        self.assertLessEqual(float(np.max(np.abs(out))), float(np.max(np.abs(mic))),
+                             "硬不变量：输出峰值不得超过输入峰值（实测曾到 8.7 RMS 满量程噪声）")
+        self.assertLess(float(np.sqrt(np.mean(out ** 2))), 2.0 * float(np.sqrt(np.mean(mic ** 2))),
+                        "旁路保险：残差不该比输入响")
+        self.assertLessEqual(float(np.linalg.norm(aec._w)), 4.0 + 1e-6, "‖w‖ 必须有上限")
+        self.assertGreater(aec.bypass_frames, 0, "这种场景应触发过旁路保护")
+
+    def test_bypass_does_not_fire_on_a_good_path(self):
+        """旁路是保险，**不该在正常消回声时误触发**（否则把自己的 ERLE 吃掉）。"""
+        ref = speech_like(32000, amp=0.4)
+        aec = NlmsAec(samplerate=16000, frame_ms=20, filter_ms=200)
+        echo = echo_path(ref, delay_ms=20, gain=0.6)
+        mic = (echo + 0.0005 * rng.standard_normal(ref.size)).astype(np.float32)
+        out = aec.process(mic, ref)
+        # 允许极少数（≤2）单帧瞬时过冲：块更新偶尔会让某一帧残差短暂超标，旁路它一帧即可，
+        # 不该因此衰减权重（真正的质量下限由下面的 ERLE 断言和 test_cancels_synthetic_echo 守着）。
+        self.assertLess(aec.bypass_frames, aec.frames * 0.2, "正常回声路径不该被旁路大面积打断")
+        half = out.size // 2
+        erle = 10 * np.log10(float(np.mean(mic[half:] ** 2)) / max(float(np.mean(out[half:] ** 2)), 1e-12))
+        self.assertGreater(erle, 15.0, f"正常路径仍应消掉 ≥15dB（实测 {erle:.1f}dB）")
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

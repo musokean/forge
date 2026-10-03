@@ -80,7 +80,7 @@ class NlmsAec(AecEngine):
 
     def __init__(self, samplerate: int = 16000, frame_ms: int = 20, filter_ms: int = 200,
                  mu: float = 0.35, eps: float = 1e-6, dtd_ratio: float = 2.0,
-                 warmup_ms: int = 300):
+                 warmup_ms: int = 300, w_max: float = 4.0, bypass_ratio: float = 4.0):
         _require_numpy()
         self.samplerate = int(samplerate)
         self.frame = max(1, int(self.samplerate * frame_ms / 1000))
@@ -88,6 +88,9 @@ class NlmsAec(AecEngine):
         self.mu = float(mu)
         self.eps = float(eps)
         self.dtd_ratio = float(dtd_ratio)
+        self.w_max = float(w_max)                # ‖w‖ 上限（真实房间回声路径增益不可能到 1 量级）
+        self.bypass_ratio = float(bypass_ratio)  # 残差比输入还响 → 这一帧旁路（AEC 不该消得更差）
+        self.bypass_frames = 0                   # 旁路次数（可观测：判断参考是否靠谱）
         # 冷启动收敛期：系数还在学房间响应时，残差里仍有回声 —— 这段时间不能把残差当「用户说话」
         self.warmup_frames = max(1, int(warmup_ms / max(1, frame_ms)))
         self.reset()
@@ -100,6 +103,7 @@ class NlmsAec(AecEngine):
         self.frozen_frames = 0
         self._echo_pow = 0.0                                   # 滚动：估计回声能量
         self._res_pow = 0.0                                    # 滚动：残差能量
+        self._mic_pow = 0.0                                    # 滚动：麦克风能量（旁路判据用平滑值）
 
     # ---- 主处理 ----
     def process(self, mic, ref):
@@ -133,6 +137,8 @@ class NlmsAec(AecEngine):
         mic_pow = float(np.mean(d * d))
         self._echo_pow = 0.9 * self._echo_pow + 0.1 * echo_pow
         self._res_pow = 0.9 * self._res_pow + 0.1 * res_pow
+        self._mic_pow = 0.9 * self._mic_pow + 0.1 * mic_pow
+
 
         # ① 双讲检测（DTD）：**初始收敛期不冻结**（否则学不到房间响应），
         #    收敛后用「回声能量比」判：麦克风能量 ≫ 滤波器估计的回声能量 → 近端在说话。
@@ -146,6 +152,29 @@ class NlmsAec(AecEngine):
         # 浮点噪声让它在多数帧都成立 → 自适应几乎每帧被冻结，权重长不起来（ERLE 0.2dB）。
         # 必须给余量（这里 2×，即「明显变差」才算发散）。
         diverging = mic_pow > 1e-9 and res_pow > 2.0 * mic_pow
+        # ⓪ 硬保险：**残差明显比输入还响 → 这一帧旁路（原样输出输入）**。
+        #    AEC 绝不把链路消得更差：无论滤波器因何学坏（参考错段/延迟超出跨度/房间突变/设备换位），
+        #    输出都不能失控。2026-10-03 真机声学实测：参考没对齐时 ‖w‖ 涨到 91.7、残差 RMS 8.7
+        #    （满量程噪声）—— 正是这条要兜住的场景。
+        #    判据要「明显更差」（4× = 6dB）才算，且**不加收敛期门控** —— 剧烈发散恰恰发生在收敛期
+        #    （门控反而拦不住）。代价是判据必须用平滑能量（见下），否则正常收敛会被自己打断。
+        #    判据用**平滑后**的能量（单帧功率会被语音包络低谷骗：波谷处回声≈0，单帧比轻易超限，
+        #    和 Geigel 那次是同一类坑）。
+        #    两层判据：① **瞬时**严重超标（>25×，且输入本身够响 → 避开包络波谷）→ 立刻兜住，
+        #    因为平滑判据有滞后，而爆音往往发生在头几帧；② **平滑**明显更差（>4×）→ 兜住持续发散。
+        #    判据分两层：
+        #    ① **无条件硬不变量**：输出功率不得超过输入 —— 「消除」只可能减小能量，超过就是滤波器坏了
+        #       （这一条即时生效、不依赖平滑，所以头几帧的爆音也拦得住）。此时**不动权重**，只是这一帧不消。
+        #    ② **持续发散**（平滑后仍明显更差，>4×）→ 衰减权重让它重学（单帧过冲不该惩罚滤波器）。
+        sustained = self._mic_pow > 1e-9 and self._res_pow > self.bypass_ratio * self._mic_pow
+        if (mic_pow > 1e-12 and res_pow > mic_pow) or sustained:
+            self.bypass_frames += 1
+            if sustained:
+                self._w *= 0.5
+            e = d.copy()                         # 旁路 = 不消（原样给下游），而不是输出静音
+            res_pow = mic_pow
+            self._res_pow = 0.9 * self._res_pow + 0.1 * mic_pow
+            diverging = False
         if near_end or diverging:
             self.frozen_frames += 1
         else:
@@ -155,7 +184,11 @@ class NlmsAec(AecEngine):
             # 正确形式：Δw = μ·Σ_n e[n]·x_n / mean_n(‖x_n‖²)
             p = float(np.mean(np.sum(win * win, axis=1))) + self.eps
             self._w += self.mu * (win.T @ e) / p
-            self._w = np.clip(self._w, -10.0, 10.0)                   # 数值兜底
+            # ‖w‖ 上限：参考对不上时 NLMS 会失控长大（见上）—— 夹住范数与逐点值
+            nw = float(np.linalg.norm(self._w))
+            if nw > self.w_max:
+                self._w *= self.w_max / nw
+            self._w = np.clip(self._w, -4.0, 4.0)                     # 数值兜底
 
         self._x = xw[-self.taps:].copy()
         self.frames += 1
@@ -177,7 +210,7 @@ class NlmsAec(AecEngine):
 
     def stats(self) -> dict:
         return {"engine": self.name, "frames": self.frames, "frozen": self.frozen_frames,
-                "erle_db": round(self.erle_db(), 1), "taps": self.taps}
+                "bypass": self.bypass_frames, "erle_db": round(self.erle_db(), 1), "taps": self.taps}
 
 
 # ══════════════════════════════════════════════════════════════════
