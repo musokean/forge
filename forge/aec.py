@@ -239,34 +239,56 @@ def available_engines() -> list:
 
 
 class DelayTracker:
-    """在线估计「麦克风听到播放声音」比「参考时间轴」晚多少毫秒。
+    """在线估计「麦克风听到播放声音」比「参考时间轴」晚多少毫秒（**弱回声下也要稳**）。
 
     **为什么必须有**：真实设备的输出缓冲 + 输入缓冲 + 声学延迟合计可达数百毫秒 ——
-    2026-10-03 本机实测 **520ms**，而 PortAudio 报的输入 latency 只有 26ms、任何固定常数都盖不住。
-    参考对不上，AEC 就只能空转（真机实测：滤波器从未收敛、残差反而更响），残余抑制的
-    「麦克风 vs 预期回声」也无从判断 → 它就把自己的话当成用户输入。
+    2026-10-03 本机实测 **460~520ms**，而 PortAudio 报的输入 latency 只有 26ms、固定常数盖不住。
+    参考对不上，AEC 只能空转，残余抑制的「麦克风 vs 预期回声」也无从判断 → 它就把自己的话当输入。
 
-    **为什么用包络、不用波形**：笔记本喇叭→麦克风是**非线性**路径（波形相关只有 0.045），
-    但**能量包络几乎不变形**（实测包络相关 0.31，峰很清晰）→ 用 20ms 的 RMS 序列做互相关最稳。
+    **为什么用包络不用波形**：笔记本喇叭→麦克风是**非线性**路径（波形相关只有 0.045），
+    但**能量包络几乎不变形**（包络相关 0.31）→ 用 20ms 的 RMS 序列做互相关最稳。
 
-    用法：每块 `push(mic_block, ref_block)`（两段等长、时间轴各自对齐），
-    定期 `estimate_ms()` 取延迟；拿到后用它去取参考（`lead_s = 延迟`）。
+    **弱回声三招**（2026-10-03 实测：单帧取峰会让估计在 250/460/786ms 之间乱跳 → 参考对不上）：
+    1. **长窗**：麦克风侧用 `mic_window_ms`（默认 1500ms）而不是几百毫秒 —— 样本多、峰才立得住。
+    2. **跨帧累积相关谱**（多帧投票的严谨形态）：每帧算出**整条** lag→相关曲线，按该帧的
+       「麦克风活跃度」加权累加（带衰减）。噪声在各帧里不相关、会互相抵消，真实延迟的峰会叠加
+       增强 —— 比「每帧各取一个 argmax 再投票」更稳（后者会被单帧伪峰污染）。
+    3. **强相关才采纳**：平均谱的峰必须 ≥ `min_corr`、且明显高于谱的中位数（`peak_ratio`），
+       还要累计够 `min_votes` 帧、与当前值的突变 ≤ `max_jump_ms`（除非连续 `min_votes` 帧都指向新值）。
+       任何一条不满足就**保留旧值**（宁可用旧的可信值，也不用新的噪声）。
+
+    用法：每块 `push(mic_block, ref_block)`（等长、各自时间轴对齐），定期 `estimate_ms()` 取延迟。
     """
 
     def __init__(self, samplerate: int = 16000, hop_ms: int = 20, max_ms: int = 1000,
-                 mic_window_ms: int = 600, smooth: float = 0.5):
+                 mic_window_ms: int = 1500, min_corr: float = 0.25, peak_ratio: float = 1.25,
+                 min_votes: int = 3, max_jump_ms: int = 300, decay: float = 0.85,
+                 min_mic_rms: float = 1e-3):
+        # ↑ 注意单位：比的是 **20ms 包络的 RMS**（不是波形 RMS），数值天然小几倍 ——
+        #   曾按波形量级写 3e-3，结果弱回声（包络 std 2.4e-3）每一帧都被判成「没动静」而
+        #   一次都不投票（2026-10-03 合成用例抓到）。
         self.sr = int(samplerate)
         self.hop = max(1, int(self.sr * hop_ms / 1000))
         self.hop_ms = int(hop_ms)
         self.max_hops = max(1, int(max_ms) // self.hop_ms)
-        self.mic_hops = max(2, int(mic_window_ms) // self.hop_ms)
-        self.smooth = float(smooth)
+        self.mic_hops = max(4, int(mic_window_ms) // self.hop_ms)
+        self.min_corr = float(min_corr)
+        self.peak_ratio = float(peak_ratio)
+        self.min_votes = max(1, int(min_votes))
+        self.max_jump_ms = float(max_jump_ms)
+        self.decay = float(decay)
+        self.min_mic_rms = float(min_mic_rms)
         self.mic_env = []
         self.ref_env = []
         self.delay_ms = None
         self.corr = 0.0
         self.samples = 0
+        self.votes = 0
+        self._prof = None
+        self._wsum = 0.0
+        self._pending_jump = None
 
+    # ---- 积累 ----
     def push(self, mic_block, ref_block):
         """推入一块（等长）麦克风与参考音频，内部转成 20ms 的 RMS 包络。"""
         import numpy as np
@@ -284,41 +306,70 @@ class DelayTracker:
             del self.mic_env[:-keep]
             del self.ref_env[:-keep]
 
+    def reset(self):
+        """新一轮播放（参考静音够久后）→ 清累积谱，避免上一轮的谱污染。"""
+        self._prof = None
+        self._wsum = 0.0
+        self.votes = 0
+        self._pending_jump = None
+
+    # ---- 估计 ----
     def estimate_ms(self):
-        """包络互相关求延迟（毫秒）；样本不足返回上一次的值（可能为 None）。"""
+        """返回可信的延迟（毫秒）；证据不足时返回上一次的值（可能为 None）。"""
         import numpy as np
 
-        if len(self.mic_env) < self.max_hops + self.mic_hops:
+        need = self.max_hops + self.mic_hops
+        if len(self.mic_env) < need:
             return self.delay_ms
         mic = np.asarray(self.mic_env[-self.mic_hops:], dtype=np.float64)
-        ref = np.asarray(self.ref_env[-(self.max_hops + self.mic_hops):], dtype=np.float64)
-        if float(np.ptp(mic)) < 1e-6:                    # 麦克风这段没动静（没在播/太安静）→ 别乱估
+        ref = np.asarray(self.ref_env[-need:], dtype=np.float64)
+        mic_active = float(np.std(mic))
+        if mic_active < self.min_mic_rms:               # 麦克风这段没动静 → 不投票（更不改变结论）
             return self.delay_ms
         mc = mic - mic.mean()
-        denom_m = float(np.linalg.norm(mc)) + 1e-12
-        best = (-2.0, 0)
-        for lag in range(0, self.max_hops + 1):
+        mc_norm = float(np.linalg.norm(mc)) + 1e-12
+        # 当前帧的整条相关谱（每个候选 lag 一个相关值）
+        prof = np.zeros(self.max_hops + 1, dtype=np.float64)
+        for lag in range(self.max_hops + 1):
             seg = ref[len(ref) - self.mic_hops - lag: len(ref) - lag]
-            if seg.size != mic.size:
-                continue
             sc = seg - seg.mean()
-            d = float(np.dot(mc, sc) / (denom_m * (float(np.linalg.norm(sc)) + 1e-12)))
-            if d > best[0]:
-                best = (d, lag)
-        self.corr = best[0]
-        lag_ms = best[1] * self.hop_ms
-        # 相关太弱（没在播/回声太小/包络太平）→ 不敢用，保留旧值。阈值 0.25：真机非线性路径下
-        # 包络相关实测 0.3 量级，而噪声段的峰值也能到 0.2 左右 —— 门槛低了会漂（实测 460→786ms）。
-        if best[0] < 0.25:
+            prof[lag] = float(np.dot(mc, sc) / (mc_norm * (float(np.linalg.norm(sc)) + 1e-12)))
+        w = min(mic_active, 1.0)                        # 活跃度当权重：响的帧更可信
+        if self._prof is None:
+            self._prof = prof * w
+        else:
+            self._prof = self._prof * self.decay + prof * w
+        self._wsum = self._wsum * self.decay + w
+        self.votes += 1
+        if self.votes < self.min_votes:
             return self.delay_ms
-        if self.delay_ms is not None and abs(lag_ms - self.delay_ms) > 300:
-            return self.delay_ms                         # 突变 >300ms 视为一次坏估计，不采纳
-        self.delay_ms = lag_ms if self.delay_ms is None else int(round(
-            (1 - self.smooth) * self.delay_ms + self.smooth * lag_ms))
+        avg = self._prof / max(self._wsum, 1e-9)
+        lag = int(np.argmax(avg))
+        peak = float(avg[lag])
+        self.corr = peak
+        med = float(np.median(avg))
+        if peak < self.min_corr:                        # ① 相关太弱（回声太小/包络太平）→ 不采纳
+            return self.delay_ms
+        if peak < self.peak_ratio * med:                # ② 峰不够突出（谱一片平）→ 不采纳
+            return self.delay_ms
+        cand = lag * self.hop_ms
+        if self.delay_ms is None:
+            self.delay_ms = cand
+            return self.delay_ms
+        if abs(cand - self.delay_ms) > self.max_jump_ms:   # ③ 突变 → 需连续投票同意才改
+            if self._pending_jump == cand:
+                self.delay_ms = cand
+                self._pending_jump = None
+            else:
+                self._pending_jump = cand
+            return self.delay_ms
+        # 稳定区：小步平滑（跟随缓慢漂移，不被单次估计带跑）
+        self.delay_ms = int(round(0.7 * self.delay_ms + 0.3 * cand))
         return self.delay_ms
 
     def stats(self) -> dict:
-        return {"delay_ms": self.delay_ms, "corr": round(self.corr, 3), "hops": self.samples}
+        return {"delay_ms": self.delay_ms, "corr": round(self.corr, 3), "votes": self.votes,
+                "hops": self.samples}
 
 
 class ResidualSuppressor:
@@ -340,8 +391,8 @@ class ResidualSuppressor:
     """
 
     def __init__(self, ref_threshold: float = 1e-4, open_ratio: float = 3.0,
-                 hold_ms: int = 1500, duck: float = 0.15, gap_ms: int = 300,
-                 samplerate: int = 16000, min_samples: int = 4,
+                 hold_ms: int = 600, duck: float = 0.15, gap_ms: int = 300,
+                 samplerate: int = 16000, min_samples: int = 3,
                  burst_skip_ms: float = 700.0):
         self.ref_threshold = float(ref_threshold)   # 参考能量低于此 = 没在播放 → 直通
         self.open_ratio = float(open_ratio)         # 麦克风比预期回声响这么多 → 判为有人说话

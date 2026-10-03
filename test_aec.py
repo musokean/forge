@@ -480,6 +480,33 @@ class TestDelayTracker(unittest.TestCase):
         self.assertIsNotNone(tr.delay_ms, "应估出延迟")
         self.assertLess(abs(tr.delay_ms - 600), 60, f"估到 {tr.delay_ms}ms，期望 ≈600ms")
 
+    def test_weak_echo_gives_a_stable_estimate(self):
+        """**弱回声**（只比底噪高约 5dB）下估计必须稳定且正确。
+
+        回归：2026-10-03 真机上单帧取峰让估计在 250/460/786ms 之间乱跳 → 参考对不上 →
+        抑制器耦合基准失效 → 回声仍被当成用户输入。修法：长窗 + 跨帧累积相关谱 + 强相关才采纳。
+        """
+        from forge.aec import DelayTracker
+        sr, blk, true_ms = 16000, int(0.2 * 16000), 520
+        ref = self._speechy(9.0, seed=11)
+        d = int(true_ms / 1000 * sr)
+        echo = np.clip(0.6 * ref, -0.5, 0.5).astype(np.float32)
+        mic = np.concatenate([np.zeros(d, dtype=np.float32), echo[:ref.size - d]])
+        # 回声压到只比底噪高 ~5dB（底噪 0.006 RMS、回声 ~0.011 RMS）：真机就是这个量级
+        mic = (0.006 * np.random.default_rng(4).standard_normal(mic.size)).astype(np.float32) + mic * 0.055
+        tr = DelayTracker(samplerate=sr)
+        ests = []
+        for i in range(0, ref.size - blk, blk):
+            tr.push(mic[i:i + blk], ref[i:i + blk])
+            e = tr.estimate_ms()
+            if e is not None:
+                ests.append(e)
+        self.assertTrue(ests, "弱回声下也应给出估计")
+        self.assertLess(abs(ests[-1] - true_ms), 80, f"估到 {ests[-1]}ms，期望 ≈{true_ms}ms")
+        tail = ests[-8:]
+        self.assertLessEqual(max(tail) - min(tail), 60,
+                             f"后段估计抖动 {max(tail) - min(tail)}ms（应稳定，这是本轮要修的抖动）")
+
     def test_silent_mic_yields_no_estimate(self):
         """麦克风全程安静（没在播/没回声）→ 不许乱给延迟（否则会把参考推错地方）。"""
         from forge.aec import DelayTracker
