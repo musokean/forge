@@ -369,5 +369,52 @@ class TestAecSafetyNet(unittest.TestCase):
         self.assertGreater(erle, 15.0, f"正常路径仍应消掉 ≥15dB（实测 {erle:.1f}dB）")
 
 
+@needs_numpy
+class TestResidualSuppressor(unittest.TestCase):
+    """残余回声抑制：喇叭→麦克风**非线性**时唯一有效的一步（AEC 之后）。
+
+    真机实测：麦克风与播放音频最佳相关仅 0.045（线性滤波器建模不了）→ AEC 消不掉 → 它听回自己。
+    """
+
+    def _ref(self, seconds=1.0, amp=0.3):
+        return (amp * np.sin(2 * np.pi * 220 * np.arange(int(16000 * seconds)) / 16000)).astype(np.float32)
+
+    def test_echo_only_is_suppressed(self):
+        """只有回声（喇叭在响、没人说话）→ 压住，别让 VAD 触发。"""
+        from forge.aec import ResidualSuppressor
+        ref = self._ref(1.0, 0.3)
+        # 非线性回声：削波 + 噪声（真实笔记本就是这样，所以线性 AEC 无效）
+        echo = np.clip(0.25 * ref, -0.2, 0.2) + 0.002 * rng.standard_normal(ref.size)
+        s = ResidualSuppressor()
+        out = s.process(echo.astype(np.float32), ref)
+        self.assertLess(float(np.sqrt(np.mean(out ** 2))), 0.5 * float(np.sqrt(np.mean(echo ** 2))),
+                        "播放期间的回声应被明显压住")
+        self.assertGreater(s.suppressed, 0)
+
+    def test_loud_near_end_passes_through(self):
+        """有人明显在说话（能量远超预期回声）→ 放行，保住插话。"""
+        from forge.aec import ResidualSuppressor
+        ref = self._ref(1.0, 0.3)
+        echo = np.clip(0.25 * ref, -0.2, 0.2)
+        speech = 0.35 * (rng.standard_normal(ref.size) * np.linspace(0.5, 1.0, ref.size)).astype(np.float32)
+        mic = (echo + speech).astype(np.float32)
+        s = ResidualSuppressor()
+        s.process(echo.astype(np.float32), ref)        # 先让基准收敛到「只有回声」
+        out = s.process(mic, ref)
+        self.assertGreater(float(np.sqrt(np.mean(out ** 2))), 0.8 * float(np.sqrt(np.mean(mic ** 2))),
+                           "人声明显更响时应放行（否则插话被压掉）")
+        self.assertGreater(s.passed, 0)
+
+    def test_no_playback_is_passthrough(self):
+        """没在播放（参考为空）→ 原样直通，绝不动用户的麦克风。"""
+        from forge.aec import ResidualSuppressor
+        silence = np.zeros(16000, dtype=np.float32)
+        speech = (0.2 * rng.standard_normal(16000)).astype(np.float32)
+        s = ResidualSuppressor()
+        out = s.process(speech, silence)
+        self.assertTrue(np.allclose(out, speech), "未播放时必须直通")
+        self.assertEqual(s.suppressed, 0)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

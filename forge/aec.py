@@ -78,9 +78,9 @@ class NlmsAec(AecEngine):
 
     name = "nlms"
 
-    def __init__(self, samplerate: int = 16000, frame_ms: int = 20, filter_ms: int = 200,
+    def __init__(self, samplerate: int = 16000, frame_ms: int = 20, filter_ms: int = 100,
                  mu: float = 0.35, eps: float = 1e-6, dtd_ratio: float = 2.0,
-                 warmup_ms: int = 300, w_max: float = 4.0, bypass_ratio: float = 4.0):
+                 warmup_ms: int = 300, w_max: float = 1.5, bypass_ratio: float = 1.25):
         _require_numpy()
         self.samplerate = int(samplerate)
         self.frame = max(1, int(self.samplerate * frame_ms / 1000))
@@ -152,25 +152,17 @@ class NlmsAec(AecEngine):
         # 浮点噪声让它在多数帧都成立 → 自适应几乎每帧被冻结，权重长不起来（ERLE 0.2dB）。
         # 必须给余量（这里 2×，即「明显变差」才算发散）。
         diverging = mic_pow > 1e-9 and res_pow > 2.0 * mic_pow
-        # ⓪ 硬保险：**残差明显比输入还响 → 这一帧旁路（原样输出输入）**。
-        #    AEC 绝不把链路消得更差：无论滤波器因何学坏（参考错段/延迟超出跨度/房间突变/设备换位），
-        #    输出都不能失控。2026-10-03 真机声学实测：参考没对齐时 ‖w‖ 涨到 91.7、残差 RMS 8.7
-        #    （满量程噪声）—— 正是这条要兜住的场景。
-        #    判据要「明显更差」（4× = 6dB）才算，且**不加收敛期门控** —— 剧烈发散恰恰发生在收敛期
-        #    （门控反而拦不住）。代价是判据必须用平滑能量（见下），否则正常收敛会被自己打断。
-        #    判据用**平滑后**的能量（单帧功率会被语音包络低谷骗：波谷处回声≈0，单帧比轻易超限，
-        #    和 Geigel 那次是同一类坑）。
-        #    两层判据：① **瞬时**严重超标（>25×，且输入本身够响 → 避开包络波谷）→ 立刻兜住，
-        #    因为平滑判据有滞后，而爆音往往发生在头几帧；② **平滑**明显更差（>4×）→ 兜住持续发散。
-        #    判据分两层：
-        #    ① **无条件硬不变量**：输出功率不得超过输入 —— 「消除」只可能减小能量，超过就是滤波器坏了
-        #       （这一条即时生效、不依赖平滑，所以头几帧的爆音也拦得住）。此时**不动权重**，只是这一帧不消。
-        #    ② **持续发散**（平滑后仍明显更差，>4×）→ 衰减权重让它重学（单帧过冲不该惩罚滤波器）。
+        # ⓪ 硬保险：**旁路**（这一帧原样输出输入、不消）—— 只在「明显更差」时触发。
+        #    AEC 不该把链路消得更差：滤波器学坏时（参考错段/延迟超出跨度/房间突变/设备换位）兜住。
+        #    ★ 2026-10-03 真机端到端复现踩到的坑：第一版写成「**每帧**无条件不超输入（无余量）」→
+        #    未收敛时残差本来就常比输入略响 → **54% 的帧被旁路 → AEC 等于被关掉** → 它听回自己的话
+        #    （用户实测原话：「他把自己说的也当作我的输入了」）。判据因此必须：① 用**平滑**能量
+        #    （单帧功率会被语音包络波谷骗，与 Geigel 同类坑）；② 留余量（1.25×）；③ 真正的「不许爆」
+        #    靠 **w_max 范数上限**（物理上回声路径增益 < 1），而不是每帧比较。
         sustained = self._mic_pow > 1e-9 and self._res_pow > self.bypass_ratio * self._mic_pow
-        if (mic_pow > 1e-12 and res_pow > mic_pow) or sustained:
+        if sustained:
             self.bypass_frames += 1
-            if sustained:
-                self._w *= 0.5
+            self._w *= 0.5                       # 持续更差 → 衰减权重让它重学
             e = d.copy()                         # 旁路 = 不消（原样给下游），而不是输出静音
             res_pow = mic_pow
             self._res_pow = 0.9 * self._res_pow + 0.1 * mic_pow
@@ -244,6 +236,71 @@ def available_engines() -> list:
         except Exception:
             pass
     return names
+
+
+class ResidualSuppressor:
+    """线性 AEC 之后的**残余回声抑制**（真实产品里 AEC 后面那一步：NLP/RES）。
+
+    **为什么必须有**：笔记本的「喇叭→麦克风」是**非线性**路径（驱动增强/削波/机壳震动），线性
+    自适应滤波器在原理上建模不了 —— 2026-10-03 真机实测：麦克风与播放音频的最佳相关只有 **0.045**
+    （换了 4~5 种对齐都是这个量级），于是 AEC 消不掉、它照样听得见自己（用户原话：
+    「他把自己说的也当作我的输入了」）。此时唯一有效的是**按参考能量压制**。
+
+    做法（自适应、不拍固定阈值）：播放期间用「麦克风能量 / 参考能量」的**中位数**估计耦合系数
+    （中位数对个别异常帧稳健 —— 用最小值会被「回声还没到/信号很弱的帧」拉低，真实回声就被误判成
+    人声而全部放行，2026-10-03 真机实测踩到），然后：
+
+    · 麦克风能量 > `open_ratio` × 预期回声 → **有人在说话** → 原样放行（**保住插话**）
+    · 否则 → 压到 `duck`（回声不再触发 VAD，它就不会听回自己）
+
+    每轮播放重新校准：参考静音超过 `gap_ms` 视为新一轮（用户说话时段不会污染下一轮的基准）。
+    """
+
+    def __init__(self, ref_threshold: float = 1e-4, open_ratio: float = 3.0,
+                 hold_ms: int = 400, duck: float = 0.15, gap_ms: int = 300):
+        self.ref_threshold = float(ref_threshold)   # 参考能量低于此 = 没在播放 → 直通
+        self.open_ratio = float(open_ratio)         # 麦克风比预期回声响这么多 → 判为有人说话
+        self.hold_ms = int(hold_ms)                 # 采样窗口（每轮播放开头）
+        self.duck = float(duck)                     # 压制系数
+        self.gap_ms = int(gap_ms)                   # 参考静音超此 → 视为新一轮
+        self.coupling = None
+        self.suppressed = 0
+        self.passed = 0
+        self.rounds = 0                             # 校准过几轮（可观测）
+        self._cal = []
+        self._silent_ms = 0
+
+    def process(self, mic, ref):
+        import numpy as np
+
+        x = np.asarray(mic, dtype=np.float32)
+        r = np.asarray(ref, dtype=np.float32)
+        m_pow = float(np.mean(x * x)) if x.size else 0.0
+        r_pow = float(np.mean(r * r)) if r.size else 0.0
+        if r_pow < self.ref_threshold:              # 没在播放：不碰麦克风（用户说话/环境声不受影响）
+            self._silent_ms += 20
+            if self._silent_ms >= self.gap_ms:      # 静音够久 → 下一轮播放要重新校准
+                self._cal, self.coupling = [], None
+            return x
+        self._silent_ms = 0
+        ratio = m_pow / max(r_pow, 1e-12)
+        if not self._cal or len(self._cal) * 20 < self.hold_ms:
+            # 只让「看起来还是回声」的帧进校准：明显超出当前基准的帧可能是用户说话，
+            # 让它进样本会把基准抬高 → 真实回声被误判成人声而全部放行（用例守这条）。
+            if self.coupling is None or ratio <= 2.0 * self.coupling:
+                self._cal.append(ratio)
+            self.coupling = float(np.median(self._cal))     # 边采边用（首帧就能压）
+            if len(self._cal) * 20 >= self.hold_ms:
+                self.rounds += 1
+        if m_pow > self.open_ratio * self.coupling * r_pow:
+            self.passed += 1                        # 明显比预期回声响 → 有人在说话 → 放行（保住插话）
+            return x
+        self.suppressed += 1
+        return (x * self.duck).astype(np.float32)
+
+    def stats(self) -> dict:
+        return {"suppressed": self.suppressed, "passed": self.passed, "rounds": self.rounds,
+                "coupling": round(self.coupling, 5) if self.coupling is not None else None}
 
 
 def make_aec(name: str = "nlms", **kw) -> AecEngine:

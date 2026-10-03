@@ -32,7 +32,7 @@ import threading
 import time
 import wave
 
-from .aec import AecEngine, ReferenceTap, make_aec
+from .aec import AecEngine, ReferenceTap, ResidualSuppressor, make_aec
 
 # ══════════════════════════════════════════════════════════════════
 # 依赖检查（Phase 1 沿用）
@@ -470,6 +470,13 @@ class SoundDeviceSink(AudioSink):
         self.block = max(1, int(self.samplerate * block_ms / 1000))
 
     def play(self, path):
+        # ★ 每次开始播放都要**重新锚定参考时间轴**：`ReferenceTap.stream()` 的游标在第一次调用时
+        #   锚定，而监听线程通常比播放先起来（差 100~300ms）→ 不重锚就整体错位、超出滤波器跨度，
+        #   AEC 完全失效（2026-10-03 端到端复现挖到：残差比输入还响、VAD 仍被自己的话触发）。
+        try:
+            self.tap.reset_cursor()
+        except Exception:                                   # pragma: no cover
+            pass
         return _SoundDevicePlayback(self, decode_audio_pcm(path, self.samplerate))
 
 
@@ -621,7 +628,8 @@ class MicListener:
     """
 
     def __init__(self, source: AudioSource, vad: EnergyVAD = None, barge_ms: int = 300,
-                 aec: "AecEngine" = None, ref_tap=None, aec_lead_ms: int = 120):
+                 aec: "AecEngine" = None, ref_tap=None, aec_lead_ms: int = 120,
+                 suppressor: "ResidualSuppressor" = None):
         self.source = source
         self.vad = vad or EnergyVAD()
         self.barge_ms = barge_ms
@@ -630,6 +638,8 @@ class MicListener:
         self.aec = aec
         self.ref_tap = ref_tap
         self.aec_lead_ms = int(aec_lead_ms)
+        # 残余回声抑制（AEC 之后那一步）：喇叭→麦克风非线性时 AEC 消不掉，靠它压住（见 aec.py）
+        self.suppressor = suppressor
         self.events = queue.Queue()
         self._frames = []                 # 当前这句话的音频
         self._lock = threading.Lock()
@@ -703,6 +713,8 @@ class MicListener:
         # 用 stream()（一次锚定后按样本计数推进）：每块都用墙钟会让滤波器学糊，见 ReferenceTap.stream
         ref = self.ref_tap.stream(blk.size, self.aec_lead_ms / 1000.0)
         out = self.aec.process(blk, ref)
+        if self.suppressor is not None:
+            out = self.suppressor.process(out, ref)   # AEC 之后再来一道：压住非线性残余回声
         if not self.aec.converged():
             # 冷启动收敛期：残差里还有回声，把它当静音 —— 否则会「自己触发自己」
             # （真实产品同样有这段保护；代价是整场开头 ~300ms 听不见，用户说话一般不会正好卡在这）
@@ -1180,7 +1192,8 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                                keep_alive: bool = True, max_rounds: int = 0,
                                on_event=None, barge_ms: int = 300, timeout_s: float = 60.0,
                                half_duplex: bool = False, guard_ms: int = 300,
-                               ptt=None, aec=None, ref_tap=None, aec_lead_ms: int = 120) -> dict:
+                               ptt=None, aec=None, ref_tap=None, aec_lead_ms: int = 120,
+                               suppressor=None) -> dict:
     """Phase 2/3 主循环：流式转写 → 流式应答（句级合成播放）→ 播放期间可抢话。
 
     **不用耳机也能用的两种模式**（默认全双工 = 假设你戴了耳机）：
@@ -1209,7 +1222,7 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
     if listener is None:
         if source is None:
             raise ValueError("需要 source 或 listener 之一（真麦克风用 SoundDeviceSource）")
-        listener = MicListener(source, EnergyVAD(), barge_ms=barge_ms,
+        listener = MicListener(source, EnergyVAD(), barge_ms=barge_ms, suppressor=suppressor,
                                aec=aec, ref_tap=ref_tap, aec_lead_ms=aec_lead_ms)
     listener.start()
     splitter = splitter or SentenceSplitter()
@@ -1430,6 +1443,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
         aec_engine = make_aec(aec, samplerate=16000)
         ref_tap = ReferenceTap(samplerate=16000)
+        suppressor = ResidualSuppressor()      # AEC 之后那一步：非线性路径也能压住残余回声
         if sink == "null":
             sink_obj = NullSink()
             print(f"🔊 回声消除（AEC={aec_engine.name}）已开，但播放是 null（无声）→ 没有参考信号，等价直通")
@@ -1469,7 +1483,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
                                              max_rounds=rounds, barge_ms=barge_ms,
                                              half_duplex=half_duplex,
                                              ptt=KeyHold() if ptt else None,
-                                             aec=aec_engine, ref_tap=ref_tap,
+                                             aec=aec_engine, ref_tap=ref_tap, suppressor=suppressor,
                                              aec_lead_ms=aec_lead_ms,
                                              on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}",
                                                                        flush=True)))
