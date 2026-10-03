@@ -86,11 +86,39 @@ server:
 """
 
 
+def user_config_dir():
+    """用户级配置目录：pip 安装后没有仓库 `config/` 时的落点。"""
+    return os.path.join(os.path.expanduser("~"), ".forge")
+
+
+def resolve_config_path(cwd=None):
+    """决定读哪份 `models.yaml`：`$FORGE_CONFIG` > 当前目录 > 包内 > 用户级（首次生成写这里）。
+
+    **2026-10-03 修（体检报告 8.13 的 PyPI 阻断项）**：原实现只认包内路径，pip 安装后
+    `_BASE_DIR` = `site-packages` ⇒ ① 用户在 cwd 放的 `config/models.yaml` **被完全忽略**；
+    ② 读不到就在 `site-packages/` 里自动生成占位配置 → 报「缺少可用的 API Key」，
+    直接击穿 README「首次运行自动生成 config/models.yaml，编辑它切换模型」这一用法。
+    实测：干净 venv 装 wheel + cwd 配好真 key，仍 0 token 无输出。
+    """
+    env = os.environ.get("FORGE_CONFIG")
+    if env:
+        return os.path.abspath(env)
+    cands = [os.path.join(cwd or os.getcwd(), "config", "models.yaml"),      # 用户当前目录
+             os.path.join(_BASE_DIR, "config", "models.yaml"),               # 仓库 / 包内
+             os.path.join(user_config_dir(), "config", "models.yaml")]       # pip 安装的用户级
+    for p in cands:
+        if os.path.exists(p):
+            return p
+    return cands[-1]        # 都没有 → 用户级（自动生成落这里，别写进 site-packages）
+
+
 def load_config(path=None):
     if path is None:
-        path = os.path.join(_BASE_DIR, "config", "models.yaml")
+        path = resolve_config_path()
     elif not os.path.isabs(path):
-        path = os.path.join(_BASE_DIR, path)  # 相对路径也基于项目根解析
+        # 相对路径：先按 cwd 解析（用户直觉），不存在再落回项目根
+        p_cwd = os.path.abspath(path)
+        path = p_cwd if os.path.exists(p_cwd) else os.path.join(_BASE_DIR, path)
     if not os.path.exists(path):
         _auto_generate_config(path)
     with open(path, "r", encoding="utf-8") as f:

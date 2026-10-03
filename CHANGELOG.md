@@ -11,6 +11,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Voice mode Phase 2/3 (#11)** — streaming transcription, sentence-level TTS, and
   barge-in (speak while the agent is generating to interrupt it).
+- **Using voice without headphones** — speakers and a microphone self-excite (the TTS comes back
+  in through the mic and looks like a new instruction), so there are now two modes for it:
+  `--half-duplex` mutes the microphone while the answer plays and reopens it after the speaker
+  tail dies (you can still interrupt while it is thinking), and `--ptt` captures only while you
+  hold space — pressing stops the playback, releasing submits that utterance.
+
+### Fixed
+
+- **`config/models.yaml` was ignored for anyone who installed the package.** Loader paths were
+  built from the package directory, which after `pip install` is `site-packages` — so a config in
+  the current directory was never read, and a placeholder one was auto-generated inside
+  `site-packages` instead, producing "missing API key" warnings. Resolution is now
+  `$FORGE_CONFIG` > `./config/models.yaml` > packaged config > `~/.forge/config/models.yaml`, and
+  `/key` writes to the same file the loader reads.
+- `StreamingSpeaker.stop()` queued its sentinel even when the worker thread had not started, so an
+  early stop (push-to-talk pressed before the first turn) left it in the queue and the next turn's
+  worker exited immediately — the answer played silently. — streaming transcription, sentence-level TTS, and
+  barge-in (speak while the agent is generating to interrupt it).
 - `docs/voice.md` — voice mode documentation.
 
 ## [0.4.1] - 2026-09-29

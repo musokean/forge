@@ -49,6 +49,8 @@ forge --serve --port 8080 # HTTP API service (pip install "handcraft-agent[serve
 ```
 
 First run auto-generates a default `config/models.yaml` (if missing) — no config file, no crash. Edit it (or `/config` in the REPL) to switch models / roles / endpoints. Model registry → roles → debate lineup → routing → knowledge base path, all config-driven, no code changes.
+    Installed with pip? It goes to `~/.forge/config/models.yaml` (or set `FORGE_CONFIG` to
+    point at your own) — a config in the current directory always wins.
 
 ## Feature highlights
 
@@ -236,55 +238,8 @@ forge --voice                              # talk, and interrupt it mid-answer
   streaming order are covered in CI: no microphone, no model, no sound
 - **No microphone needed to try it**: `forge --voice --audio-source file:question.wav --voice-sink null`
   runs the whole chain (real Whisper, real model, real edge-tts) silently
-- Headphones are required for real use: with speakers, the TTS bleeds back into the microphone and
-  gets treated as a new instruction. Details and limits: `docs/voice.md`
-
-## Sandbox and logs
-
-### Command sandbox (#4)
-
-`run_command` no longer executes straight on your machine. Policy is `sandbox.mode` in `config/models.yaml`:
-
-| Mode | Behaviour |
-|---|---|
-| `auto` (default) | Docker when available, otherwise **hardened local execution** |
-| `docker` | container only — **refuses to run** if Docker is missing (use this in production) |
-| `local` | hardened local execution, no Docker needed |
-| `off` | passthrough (legacy behaviour, debug only) |
-
-Container runs are locked down: `--rm --network=none`, memory/CPU/PID caps, read-only rootfs + tmpfs `/tmp`, non-root user `65534`, the working directory mounted **read-only**, and the container is force-removed on timeout. The local fallback still buys you real protection: a host-env allowlist (so a command can't read `DEEPSEEK_API_KEY`), dangerous-command patterns blocked (`rm -rf /`, `mkfs`, `dd` to raw devices, `shutdown`…), timeouts and output clipping.
-
-Check it from the REPL: `/sandbox` (status), `/sandbox mode docker` (switch, hot-reloaded), `/sandbox test echo hi` (see which path a command actually takes).
-
-### Structured logs (#7)
-
-Every run and every HTTP request is written as one JSON line to `data/logs/forge-YYYYMMDD.jsonl`:
-
-```json
-{"ts":"2026-09-28T23:31:34.123","level":"INFO","event":"run_end","run_id":"075ca629","role":"default","model":"deepseek-v4-flash","ms":3475.0,"prompt_tokens":812,"completion_tokens":96,"steps":3,"tools":["calculator({...})"]}
-```
-
-- **Rotation & retention**: daily files, split at `logging.max_mb`, older than `logging.keep_days` auto-pruned.
-- **Redaction**: values under keys containing `key`/`token`/`secret`/`authorization` and anything shaped like `sk-…` / `Bearer …` / `gho_…` are written as `***` — a deployed agent's logs must never leak credentials.
-- **Inspect**: `/logs` (status), `/logs tail 20`, `/logs errors`, `/logs path`, `/logs clear`.
-
-## Tests
-```bash
-python test_router.py     # task routing (rule-first + model fallback)
-python test_interrupt.py  # interrupt / steer during generation
-python test_eval.py       # golden-set evaluation
-python test_web.py        # web server end-to-end
-python test_server.py     # HTTP API service (auth / sessions / rate limit)
-python test_knowledge.py  # knowledge base
-# ... plus stress tests: test_stress*.py
-```
-
-All tests run fully offline (mocked model calls) — CI-friendly.
-
-## Contributing
-
-This project lives with a companion knowledge base (A01–A28 concept cards) that maps every implementation detail to the underlying agent principle. Issues and PRs welcome.
-
-## License
-
-MIT
+- **Speakers work too** — you do not have to wear headphones:
+  `forge --voice --half-duplex` mutes the microphone while the answer plays (it still hears you
+  while it is *thinking*, where there is no echo to confuse it), and `forge --voice --ptt` only
+  captures while you hold space — press to stop it mid-sentence, release to send that utterance.
+  Full duplex with headphones still gives the smoothest barge-in.

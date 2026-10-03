@@ -13,11 +13,16 @@
 import os
 import re
 
-from .config import _BASE_DIR, load_config, _models_list
+from .config import load_config, _models_list, resolve_config_path
 
 
 def config_path():
-    return os.path.join(_BASE_DIR, "config", "models.yaml")
+    """**与 `load_config` 共用同一套解析**（2026-10-03 修）。
+
+    原先写死包内路径：pip 安装后 `/key sk-xxx` 会写进 `site-packages/config/models.yaml`，
+    而用户 cwd 的配置文件依旧是旧的 —— 写一处、读另一处，用户看不到任何效果。
+    """
+    return resolve_config_path()
 
 
 def _read():
@@ -340,17 +345,17 @@ def set_sandbox_mode(mode):
     return False, "sandbox 段里没有 mode 行"
 
 
-
-def _append_section(lines, header_comment, body_lines, nl):
-    """配置里缺某段时，直接在文件末尾补一段（老配置升级用）。"""
-    if lines and not lines[-1].endswith(nl):
-        lines[-1] = lines[-1] + nl
-    lines.append(nl)
-    if header_comment:
-        lines.append(header_comment + nl)
-    lines.extend([l + nl for l in body_lines])
-    return lines
-
+
+def _append_section(lines, header_comment, body_lines, nl):
+    """配置里缺某段时，直接在文件末尾补一段（老配置升级用）。"""
+    if lines and not lines[-1].endswith(nl):
+        lines[-1] = lines[-1] + nl
+    lines.append(nl)
+    if header_comment:
+        lines.append(header_comment + nl)
+    lines.extend([l + nl for l in body_lines])
+    return lines
+
 def set_device_transport(transport, url=None):
     """切硬件承载（device 段）：sim / serial / mqtt；同时置 enabled（sim 时关真链路）。"""
     transport = (transport or "").strip().lower()

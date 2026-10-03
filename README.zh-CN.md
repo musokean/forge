@@ -44,7 +44,8 @@ forge --web --port 8080      # 指定端口
 forge --serve --port 8080    # 接口文档 http://127.0.0.1:8080/docs
 ```
 
-> **首次运行**：找不到配置文件时自动生成默认 `config/models.yaml`（不崩、不报错），填 key 或设环境变量即可用。模型/角色/辩论阵容/知识库路径全在 `config/models.yaml` 里改，保存即生效，不动代码。
+> **首次运行**：找不到配置文件时自动生成默认 `config/models.yaml`（不崩、不报错），填 key 或设环境变量即可用。模型/角色/辩论阵容/知识库路径全在 `config/models.yaml` 里改，保存即生效，不动代码。
+> **pip 安装的**：配置落在 `~/.forge/config/models.yaml`（也可用环境变量 `FORGE_CONFIG` 指定别的路径）；**当前目录下的 `config/models.yaml` 优先级最高**。
 
 交互式对话里**直接说即可**，forge 自动判断任务类型：简单问题直接答、多任务自动并行拆解、决策类问题自动多角色辩论，不用手动指定。
 
@@ -613,7 +614,8 @@ forge --voice                             # 说话，并在它回答时直接插
   「分段边界 / 打断时序 / 流式顺序」都在 CI 里确定性跑，**不需要麦克风、模型、出声**
 - **没麦克风也能试**：`forge --voice --audio-source file:问句.wav --voice-sink null --voice-rounds 1`
   能静音跑完真 whisper + 真模型 + 真 edge-tts 全链路
-- **真用必须戴耳机**：外放时 TTS 会被麦克风收回去当成新指令（自激）。参数、测试阶梯与已知限制见 `docs/voice.md`
+- **外放也能用（不必戴耳机）**：`forge --voice --half-duplex` = 它说话时闭麦（**思考期间仍可插话**，那时没有回声）；
+  `forge --voice --ptt` = **按住空格说话**，按下即打断、松开提交。戴耳机全双工仍是打断体验最顺的一档。
 
 | 参数 | 作用 |
 |---|---|
