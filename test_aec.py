@@ -9,12 +9,19 @@
 2026-10-03：实现时踩到 3 个真坑（窗口切片差一格、发散保护没余量、归一化多除帧长），
 都能让 AEC「看起来在跑但完全不消」——所以下面每条都有明确阈值，而不是「跑过就算」。
 """
+import importlib.util
 import os
 import sys
 import time
 import unittest
 
-import numpy as np
+try:                          # 无 numpy 环境：模块仍可被收集，用例走 skip
+    import numpy as np
+except ModuleNotFoundError:   # pragma: no cover
+    np = None
+
+HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+needs_numpy = unittest.skipUnless(HAS_NUMPY, "AEC 测试需要 numpy（pip install numpy）")
 
 sys.path.insert(0, ".")
 
@@ -24,7 +31,7 @@ from forge.voice import (EnergyVAD, MicListener, NullSink,  # noqa: E402
                          SPEECH_END, ScriptedSource, streaming_voice_loop)
 
 SR = 16000
-rng = np.random.default_rng(20261003)
+rng = np.random.default_rng(20261003) if HAS_NUMPY else None
 
 
 def echo_path(ref, delay_ms=20, gain=0.6, taps=(1.0, 0.4, 0.2)):
@@ -42,6 +49,7 @@ def speech_like(n, amp=0.3):
     return (amp * rng.standard_normal(n) * (0.5 + 0.5 * np.sin(2 * np.pi * 1.7 * t))).astype(np.float32)
 
 
+@needs_numpy
 class TestNlmsAec(unittest.TestCase):
     """DSP 核心：给定对齐的 参考/麦克风，看它消不消得掉、会不会误伤人声。"""
 
@@ -121,6 +129,7 @@ class TestNlmsAec(unittest.TestCase):
         self.assertTrue(np.array_equal(NullAec().process(x, np.zeros(1000)), x))
 
 
+@needs_numpy
 class TestReferenceTap(unittest.TestCase):
     """参考信号缓冲：把「播出时刻 → 样本」的映射做对，AEC 才拿得到正确参考。"""
 
@@ -217,6 +226,7 @@ class _RecordingSink(NullSink):
         return handle
 
 
+@needs_numpy
 class TestAecInLoop(unittest.TestCase):
     """链路级断言：AEC 开着 → 回声不触发；真人插话 → 照样触发。"""
 
@@ -253,6 +263,7 @@ class TestAecInLoop(unittest.TestCase):
         self.assertTrue(barge, "真人插话必须仍能触发（AEC 只该消回声）")
 
 
+@needs_numpy
 class TestSoundDeviceSink(unittest.TestCase):
     """`--aec` 的真实播放通路（进程内 + 参考 tap）。不打开设备、不出声，CI 安全。"""
 

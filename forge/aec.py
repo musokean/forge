@@ -22,13 +22,24 @@
 ERLE 通常 10-20dB，够把 VAD 从回声里救出来（默认阈值 0.012 vs 回声衰减后远低于它），
 但不等同于 WebRTC 那一档（含非线性处理 + 舒适噪声）。参数需按房间实测调。
 """
+from __future__ import annotations
+
 import threading
 import time
 from collections import deque
 
-import numpy as np
+try:                        # 核心安装不含 numpy（只在 [voice] extra 里）：模块仍要能导入，
+    import numpy as np      # 真正用到 AEC 时再由 _require_numpy() 给出明确提示
+except ModuleNotFoundError:  # pragma: no cover
+    np = None
 
 __all__ = ["AecEngine", "NullAec", "NlmsAec", "ReferenceTap", "make_aec", "available_engines"]
+
+
+def _require_numpy():
+    """AEC 需要 numpy；没装时给一句人话（而不是 ImportError 栈）。"""
+    if np is None:                                           # pragma: no cover
+        raise RuntimeError("回声消除需要 numpy：pip install numpy（或 pip install \"handcraft-agent[voice]\"）")
 
 
 class AecEngine:
@@ -69,14 +80,14 @@ class NlmsAec(AecEngine):
 
     def __init__(self, samplerate: int = 16000, frame_ms: int = 20, filter_ms: int = 200,
                  mu: float = 0.35, eps: float = 1e-6, dtd_ratio: float = 2.0,
-                 peak_window_ms: int = 40, warmup_ms: int = 300):
+                 warmup_ms: int = 300):
+        _require_numpy()
         self.samplerate = int(samplerate)
         self.frame = max(1, int(self.samplerate * frame_ms / 1000))
         self.taps = max(1, int(self.samplerate * filter_ms / 1000))
         self.mu = float(mu)
         self.eps = float(eps)
         self.dtd_ratio = float(dtd_ratio)
-        self.peak_window = max(1, int(self.samplerate * peak_window_ms / 1000))
         # 冷启动收敛期：系数还在学房间响应时，残差里仍有回声 —— 这段时间不能把残差当「用户说话」
         self.warmup_frames = max(1, int(warmup_ms / max(1, frame_ms)))
         self.reset()
@@ -227,6 +238,7 @@ class ReferenceTap:
     """
 
     def __init__(self, samplerate: int = 16000, capacity_s: float = 30.0):
+        _require_numpy()
         self.samplerate = int(samplerate)
         self.cap = int(capacity_s * self.samplerate)
         self._chunks = deque()                    # (t_start, np.ndarray)
