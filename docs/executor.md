@@ -8,11 +8,11 @@
         中心（服务器 / 你的机器）                       客户端（被控 PC，可多台）
 ┌──────────────────────────────────────┐        ┌────────────────────────────────┐
 │ forge 工具层  executor_run / cua_task │        │  python executor_agent.py      │
-│ 控制平面      src/executor_hub.py     │◀──出站──│  src/executor.py               │
+│ 控制平面      forge/executor_hub.py   │◀──出站──│  forge/executor.py             │
 │   · 资产目录（注册表 + 能力声明）      │  长轮询  │   · shell（走本机沙箱）         │
 │   · 策略（白名单 + 分阶段放权 + 超时）  │  反向连接│   · read_file/write_file/list_dir│
 │   · 命令状态机（seq 关联 + 审计）      │─────────▶   · screenshot（可选 GUI 依赖）  │
-│ Computer Use  src/cua.py              │  回结果  │   · input 鼠标键盘（可选）      │
+│ Computer Use  forge/cua.py            │  回结果  │   · input 鼠标键盘（可选）      │
 │   规划者→执行者→评估者→监督者          │        │   · 客户端策略：jail/体积/白名单 │
 └──────────────────────────────────────┘        └────────────────────────────────┘
 ```
@@ -44,7 +44,7 @@
 | 层 | 管什么 |
 |---|---|
 | 中心侧 `executor.hub` | 能力白名单 · 分阶段放权 `readonly/low_risk/approval/closed_loop` · 命令超时 · 结果体积上限 · 每设备待发队列上限 · **每条命令一条审计** |
-| 客户端侧 `executor.client` | 能力白名单（**未装 GUI 依赖就不声明 screenshot/input**）· 路径 jail（`root`，防 `../` 与符号链接逃逸）· 读写体积上限 · shell **走本机沙箱**（`src/sandbox.py`：Docker 可用则容器隔离，否则加固本机执行） |
+| 客户端侧 `executor.client` | 能力白名单（**未装 GUI 依赖就不声明 screenshot/input**）· 路径 jail（`root`，防 `../` 与符号链接逃逸）· 读写体积上限 · shell **走本机沙箱**（`forge/sandbox.py`：Docker 可用则容器隔离，否则加固本机执行） |
 
 分阶段放权（A25「先做内部团队，再放外部」）：`readonly`（只读）→ `low_risk`（低风险写，默认）→
 `approval`（写类动作要 `approved=true` 人工确认）→ `closed_loop`（都成熟后再全放）。
