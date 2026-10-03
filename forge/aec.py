@@ -341,7 +341,8 @@ class ResidualSuppressor:
 
     def __init__(self, ref_threshold: float = 1e-4, open_ratio: float = 3.0,
                  hold_ms: int = 1500, duck: float = 0.15, gap_ms: int = 300,
-                 samplerate: int = 16000, min_samples: int = 4):
+                 samplerate: int = 16000, min_samples: int = 4,
+                 burst_skip_ms: float = 700.0):
         self.ref_threshold = float(ref_threshold)   # 参考能量低于此 = 没在播放 → 直通
         self.open_ratio = float(open_ratio)         # 麦克风比预期回声响这么多 → 判为有人说话
         self.hold_ms = int(hold_ms)                 # 采样窗口（每轮播放开头）
@@ -349,6 +350,11 @@ class ResidualSuppressor:
         self.gap_ms = int(gap_ms)                   # 参考静音超此 → 视为新一轮
         self.sr = int(samplerate)
         self.min_samples = max(1, int(min_samples))
+        # 每轮播放先跳过「回声还没到」的那一段再校准：播放刚开始时麦克风里**还没有回声**
+        # （真机实测延迟 460~520ms），此时量到的耦合会低几十倍 → 真实回声被误判成人声而全部放行
+        # （2026-10-03 真机 coupling=4e-05 就是这个原因，不是阈值调参问题）。
+        self.burst_skip_ms = float(burst_skip_ms)
+        self._burst_ms = 0.0
         self.coupling = None
         self._cal_ms = 0.0
         self.suppressed = 0
@@ -371,18 +377,26 @@ class ResidualSuppressor:
             self._silent_ms += dur_ms
             if self._silent_ms >= self.gap_ms:      # 静音够久 → 下一轮播放要重新校准
                 self._cal, self.coupling, self._cal_ms = [], None, 0.0
+                self._burst_ms = 0.0
             return x
         self._silent_ms = 0
         ratio = m_pow / max(r_pow, 1e-12)
-        if not self._cal or self._cal_ms < self.hold_ms or len(self._cal) < self.min_samples:
+        self._burst_ms += dur_ms
+        if self._burst_ms >= self.burst_skip_ms and (
+                self.coupling is None or self._cal_ms < self.hold_ms or len(self._cal) < self.min_samples):
             # 只让「看起来还是回声」的帧进校准：明显超出当前基准的帧可能是用户说话，
             # 让它进样本会把基准抬高 → 真实回声被误判成人声而全部放行（用例守这条）。
             if self.coupling is None or ratio <= 2.0 * self.coupling:
                 self._cal.append(ratio)
                 self._cal_ms += dur_ms
-            self.coupling = float(np.median(self._cal))     # 边采边用（首帧就能压）
+            self.coupling = float(np.median(self._cal))     # 边采边用
             if self._cal_ms >= self.hold_ms and len(self._cal) >= self.min_samples:
                 self.rounds += 1
+        if self.coupling is None:
+            # 还没基准（播放头几百毫秒，回声尚未到达）→ **放行**：这几百毫秒本来也没有回声，
+            # 压住反而会吃掉用户在这段时间的插话（用例守这条）。回声真正到达后的抑制由基准判据负责。
+            self.passed += 1
+            return x
         if m_pow > self.open_ratio * self.coupling * r_pow:
             self.passed += 1                        # 明显比预期回声响 → 有人在说话 → 放行（保住插话）
             return x
