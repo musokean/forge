@@ -184,8 +184,8 @@ class _EchoSource:
         return self
 
     def read(self, frames):
-        # **实时节流**：真麦克风是阻塞读（每块耗时 = 块长）。不加节流的话，样本计数游标会在
-        # 几毫秒内跑完整个参考，之后麦克风只剩静音 —— 控制组就白测了（2026-10-03 踩到）。
+        # **实时节流**：真麦克风是阻塞读（每块耗时 = 块长）。不加节流的话，几毫秒就把参考读完了，
+        # 之后麦克风只剩静音 —— 控制组就白测了（2026-10-03 踩到）。
         if self.t0 is not None:
             due = self.t0 + (self.n + frames) / SR
             gap = due - time.monotonic()
@@ -194,8 +194,10 @@ class _EchoSource:
         now = time.monotonic()
         if self.t0 is None:
             self.t0 = now
-        # 用 stream()：真实回声路径是**固定延迟**（不该带墙钟抖动）——两边都用样本计数才对得上
-        echo = self.echo_gain * self.tap.stream(frames, lead_s=self.echo_delay_s)
+        # 与**真实设备**一致：按「这一块的采集时刻」去参考里取当时正播出去的音频（延迟 + 衰减）。
+        # 2026-10-03 改：原来用 stream()（样本计数游标）—— 那只在「假播放也按样本计数推进」时自洽，
+        # 真实链路是按墙钟的；test 替身必须按墙钟建模，否则测不出参考时序类 bug（真机就是这么挂的）。
+        echo = self.echo_gain * self.tap.segment(now, frames, lead_s=self.echo_delay_s)
         out = echo.copy()
         if self.near_end_at is not None:
             start, dur = self.near_end_at
@@ -221,8 +223,13 @@ class _RecordingSink(NullSink):
 
     def play(self, path):
         handle = super().play(path)
-        # 用一段噪声代表「播出去的 TTS」
-        self.tap.push(speech_like(int(SR * self.seconds_per_play), amp=0.35), t=time.monotonic())
+        # 用一段噪声代表「播出去的 TTS」，并**按真实播放的时间轴**分块入队（每块带它该被听到的时刻）：
+        # `push(samples, t)` 支持未来时刻，因此不需要后台线程就能模拟「正在播」的时间轴。
+        pcm = speech_like(int(SR * self.seconds_per_play), amp=0.35)
+        blk = max(1, int(SR * 0.1))
+        t0 = time.monotonic()
+        for i in range(0, pcm.size, blk):
+            self.tap.push(pcm[i:i + blk], t=t0 + i / SR)
         return handle
 
 
@@ -414,6 +421,44 @@ class TestResidualSuppressor(unittest.TestCase):
         out = s.process(speech, silence)
         self.assertTrue(np.allclose(out, speech), "未播放时必须直通")
         self.assertEqual(s.suppressed, 0)
+
+
+@needs_numpy
+class TestDelayTracker(unittest.TestCase):
+    """在线延迟估计（AEC 的参考必须对得上；真实设备合计延迟可达数百毫秒）。"""
+
+    def _speechy(self, seconds, seed=3, sr=16000):
+        rng = np.random.default_rng(seed)
+        k = np.arange(int(seconds * sr))
+        env = 0.25 + 0.75 * (0.5 + 0.5 * np.sin(2 * np.pi * k / (1.3 * sr)))
+        return (env * rng.standard_normal(k.size) * 0.35).astype(np.float32)
+
+    def test_estimates_known_delay_of_nonlinear_copy(self):
+        """麦克风 = 参考延迟 600ms 的**削波**副本（模拟非线性喇叭→麦克风）→ 应估出 ≈600ms。"""
+        from forge.aec import DelayTracker
+        sr, blk = 16000, int(0.2 * 16000)
+        ref = self._speechy(4.0)
+        d = int(0.6 * sr)
+        echo = np.clip(0.6 * ref, -0.5, 0.5).astype(np.float32)
+        mic = np.concatenate([np.zeros(d, dtype=np.float32), echo[:ref.size - d]])
+        mic = (mic + 0.002 * np.random.default_rng(9).standard_normal(mic.size)).astype(np.float32)
+        tr = DelayTracker(samplerate=sr)
+        for i in range(0, ref.size - blk, blk):
+            tr.push(mic[i:i + blk], ref[i:i + blk])
+            tr.estimate_ms()
+        self.assertIsNotNone(tr.delay_ms, "应估出延迟")
+        self.assertLess(abs(tr.delay_ms - 600), 60, f"估到 {tr.delay_ms}ms，期望 ≈600ms")
+
+    def test_silent_mic_yields_no_estimate(self):
+        """麦克风全程安静（没在播/没回声）→ 不许乱给延迟（否则会把参考推错地方）。"""
+        from forge.aec import DelayTracker
+        sr, blk = 16000, int(0.2 * 16000)
+        ref = self._speechy(3.0, seed=5)
+        tr = DelayTracker(samplerate=sr)
+        silent = np.zeros(blk, dtype=np.float32)
+        for i in range(0, ref.size - blk, blk):
+            tr.push(silent, ref[i:i + blk])
+        self.assertIsNone(tr.estimate_ms())
 
 
 if __name__ == "__main__":

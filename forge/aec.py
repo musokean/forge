@@ -238,6 +238,89 @@ def available_engines() -> list:
     return names
 
 
+class DelayTracker:
+    """在线估计「麦克风听到播放声音」比「参考时间轴」晚多少毫秒。
+
+    **为什么必须有**：真实设备的输出缓冲 + 输入缓冲 + 声学延迟合计可达数百毫秒 ——
+    2026-10-03 本机实测 **520ms**，而 PortAudio 报的输入 latency 只有 26ms、任何固定常数都盖不住。
+    参考对不上，AEC 就只能空转（真机实测：滤波器从未收敛、残差反而更响），残余抑制的
+    「麦克风 vs 预期回声」也无从判断 → 它就把自己的话当成用户输入。
+
+    **为什么用包络、不用波形**：笔记本喇叭→麦克风是**非线性**路径（波形相关只有 0.045），
+    但**能量包络几乎不变形**（实测包络相关 0.31，峰很清晰）→ 用 20ms 的 RMS 序列做互相关最稳。
+
+    用法：每块 `push(mic_block, ref_block)`（两段等长、时间轴各自对齐），
+    定期 `estimate_ms()` 取延迟；拿到后用它去取参考（`lead_s = 延迟`）。
+    """
+
+    def __init__(self, samplerate: int = 16000, hop_ms: int = 20, max_ms: int = 1000,
+                 mic_window_ms: int = 600, smooth: float = 0.5):
+        self.sr = int(samplerate)
+        self.hop = max(1, int(self.sr * hop_ms / 1000))
+        self.hop_ms = int(hop_ms)
+        self.max_hops = max(1, int(max_ms) // self.hop_ms)
+        self.mic_hops = max(2, int(mic_window_ms) // self.hop_ms)
+        self.smooth = float(smooth)
+        self.mic_env = []
+        self.ref_env = []
+        self.delay_ms = None
+        self.corr = 0.0
+        self.samples = 0
+
+    def push(self, mic_block, ref_block):
+        """推入一块（等长）麦克风与参考音频，内部转成 20ms 的 RMS 包络。"""
+        import numpy as np
+
+        m = np.asarray(mic_block, dtype=np.float32).reshape(-1)
+        r = np.asarray(ref_block, dtype=np.float32).reshape(-1)
+        n = min(m.size, r.size) // self.hop
+        for i in range(n):
+            a, b = i * self.hop, (i + 1) * self.hop
+            self.mic_env.append(float(np.sqrt(np.mean(m[a:b] ** 2))))
+            self.ref_env.append(float(np.sqrt(np.mean(r[a:b] ** 2))))
+            self.samples += 1
+        keep = self.max_hops + self.mic_hops + 2
+        if len(self.mic_env) > keep:
+            del self.mic_env[:-keep]
+            del self.ref_env[:-keep]
+
+    def estimate_ms(self):
+        """包络互相关求延迟（毫秒）；样本不足返回上一次的值（可能为 None）。"""
+        import numpy as np
+
+        if len(self.mic_env) < self.max_hops + self.mic_hops:
+            return self.delay_ms
+        mic = np.asarray(self.mic_env[-self.mic_hops:], dtype=np.float64)
+        ref = np.asarray(self.ref_env[-(self.max_hops + self.mic_hops):], dtype=np.float64)
+        if float(np.ptp(mic)) < 1e-6:                    # 麦克风这段没动静（没在播/太安静）→ 别乱估
+            return self.delay_ms
+        mc = mic - mic.mean()
+        denom_m = float(np.linalg.norm(mc)) + 1e-12
+        best = (-2.0, 0)
+        for lag in range(0, self.max_hops + 1):
+            seg = ref[len(ref) - self.mic_hops - lag: len(ref) - lag]
+            if seg.size != mic.size:
+                continue
+            sc = seg - seg.mean()
+            d = float(np.dot(mc, sc) / (denom_m * (float(np.linalg.norm(sc)) + 1e-12)))
+            if d > best[0]:
+                best = (d, lag)
+        self.corr = best[0]
+        lag_ms = best[1] * self.hop_ms
+        # 相关太弱（没在播/回声太小/包络太平）→ 不敢用，保留旧值。阈值 0.25：真机非线性路径下
+        # 包络相关实测 0.3 量级，而噪声段的峰值也能到 0.2 左右 —— 门槛低了会漂（实测 460→786ms）。
+        if best[0] < 0.25:
+            return self.delay_ms
+        if self.delay_ms is not None and abs(lag_ms - self.delay_ms) > 300:
+            return self.delay_ms                         # 突变 >300ms 视为一次坏估计，不采纳
+        self.delay_ms = lag_ms if self.delay_ms is None else int(round(
+            (1 - self.smooth) * self.delay_ms + self.smooth * lag_ms))
+        return self.delay_ms
+
+    def stats(self) -> dict:
+        return {"delay_ms": self.delay_ms, "corr": round(self.corr, 3), "hops": self.samples}
+
+
 class ResidualSuppressor:
     """线性 AEC 之后的**残余回声抑制**（真实产品里 AEC 后面那一步：NLP/RES）。
 
@@ -257,13 +340,17 @@ class ResidualSuppressor:
     """
 
     def __init__(self, ref_threshold: float = 1e-4, open_ratio: float = 3.0,
-                 hold_ms: int = 400, duck: float = 0.15, gap_ms: int = 300):
+                 hold_ms: int = 1500, duck: float = 0.15, gap_ms: int = 300,
+                 samplerate: int = 16000, min_samples: int = 4):
         self.ref_threshold = float(ref_threshold)   # 参考能量低于此 = 没在播放 → 直通
         self.open_ratio = float(open_ratio)         # 麦克风比预期回声响这么多 → 判为有人说话
         self.hold_ms = int(hold_ms)                 # 采样窗口（每轮播放开头）
         self.duck = float(duck)                     # 压制系数
         self.gap_ms = int(gap_ms)                   # 参考静音超此 → 视为新一轮
+        self.sr = int(samplerate)
+        self.min_samples = max(1, int(min_samples))
         self.coupling = None
+        self._cal_ms = 0.0
         self.suppressed = 0
         self.passed = 0
         self.rounds = 0                             # 校准过几轮（可观测）
@@ -277,20 +364,24 @@ class ResidualSuppressor:
         r = np.asarray(ref, dtype=np.float32)
         m_pow = float(np.mean(x * x)) if x.size else 0.0
         r_pow = float(np.mean(r * r)) if r.size else 0.0
+        # 块长按**实际样本数**算：真实链路每块 200ms，早期版本按「每次调用 = 20ms」记账 →
+        # 校准窗口被拉长 10 倍、中位数被播放中后期的安静帧拉垮（2026-10-03 真机实测踩到）
+        dur_ms = (float(np.size(x)) / self.sr * 1000.0) if self.sr else 20.0
         if r_pow < self.ref_threshold:              # 没在播放：不碰麦克风（用户说话/环境声不受影响）
-            self._silent_ms += 20
+            self._silent_ms += dur_ms
             if self._silent_ms >= self.gap_ms:      # 静音够久 → 下一轮播放要重新校准
-                self._cal, self.coupling = [], None
+                self._cal, self.coupling, self._cal_ms = [], None, 0.0
             return x
         self._silent_ms = 0
         ratio = m_pow / max(r_pow, 1e-12)
-        if not self._cal or len(self._cal) * 20 < self.hold_ms:
+        if not self._cal or self._cal_ms < self.hold_ms or len(self._cal) < self.min_samples:
             # 只让「看起来还是回声」的帧进校准：明显超出当前基准的帧可能是用户说话，
             # 让它进样本会把基准抬高 → 真实回声被误判成人声而全部放行（用例守这条）。
             if self.coupling is None or ratio <= 2.0 * self.coupling:
                 self._cal.append(ratio)
+                self._cal_ms += dur_ms
             self.coupling = float(np.median(self._cal))     # 边采边用（首帧就能压）
-            if len(self._cal) * 20 >= self.hold_ms:
+            if self._cal_ms >= self.hold_ms and len(self._cal) >= self.min_samples:
                 self.rounds += 1
         if m_pow > self.open_ratio * self.coupling * r_pow:
             self.passed += 1                        # 明显比预期回声响 → 有人在说话 → 放行（保住插话）

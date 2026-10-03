@@ -32,7 +32,7 @@ import threading
 import time
 import wave
 
-from .aec import AecEngine, ReferenceTap, ResidualSuppressor, make_aec
+from .aec import AecEngine, DelayTracker, ReferenceTap, ResidualSuppressor, make_aec
 
 # ══════════════════════════════════════════════════════════════════
 # 依赖检查（Phase 1 沿用）
@@ -640,6 +640,10 @@ class MicListener:
         self.aec_lead_ms = int(aec_lead_ms)
         # 残余回声抑制（AEC 之后那一步）：喇叭→麦克风非线性时 AEC 消不掉，靠它压住（见 aec.py）
         self.suppressor = suppressor
+        # 在线延迟估计：参考必须对得上才有意义，而真实设备合计延迟可达数百毫秒（本机实测 520ms），
+        # PortAudio 报的输入 latency（26ms）远不够 → 用包络互相关在线量出来（见 DelayTracker）
+        self.delay_tracker = DelayTracker(samplerate=source.samplerate) if aec is not None else None
+        self.measured_lead_ms = None
         self.events = queue.Queue()
         self._frames = []                 # 当前这句话的音频
         self._lock = threading.Lock()
@@ -664,6 +668,10 @@ class MicListener:
             while not self._stop.is_set():
                 try:
                     block = self.source.read(self.source.block_frames)
+                    # ★ 立刻记下这一块的采集时刻：参考必须按**实际采集时间**取，不能用自由漂移的游标
+                    #   （游标假设「每次调用都恰好推进 n 个样本」，一旦某块读慢/被丢就永久偏掉；
+                    #    2026-10-03 真机探针实测：参考与真实回声系统性错位，AEC 因此从未生效）
+                    cap_t = time.monotonic()
                 except Exception as e:                       # 源结束/设备异常
                     self.events.put(VadEvent(SPEECH_END))
                     self.closed = True
@@ -671,8 +679,15 @@ class MicListener:
                 with self._lock:
                     if self._muted:                          # 闭麦：这一块当没听见
                         continue
+                if self.delay_tracker is not None and self.ref_tap is not None:
+                    # 用**原始**麦克风 + **原始时间轴**的参考（lead=0）在线估延迟：估出多少，
+                    # 下一块取参考就用多少（自适应，不依赖任何固定常数）
+                    import numpy as _np
+                    _blk = _np.asarray(block, dtype=_np.float32).reshape(-1)
+                    self.delay_tracker.push(_blk, self.ref_tap.segment(cap_t, _blk.size, 0.0))
+                    self.measured_lead_ms = self.delay_tracker.estimate_ms()
                 if self.aec is not None and self.ref_tap is not None:
-                    block = self._cancel_echo(block)
+                    block = self._cancel_echo(block, cap_t)
                 for ev in self.vad.feed(block, self.source.block_ms):
                     if ev.kind == SPEECH_START:
                         self.speech_ms_run = 0
@@ -701,17 +716,28 @@ class MicListener:
         finally:
             pass
 
-    def _cancel_echo(self, block):
+    def _cancel_echo(self, block, captured_at=None):
         """把「刚播出去的声音」从这一块麦克风里减掉（AEC），再交给 VAD/抢话判定。
 
-        参考段用 `lead_s` 粗对齐（设备缓冲 + 声学延迟）；滤波器长度本身覆盖延迟不确定性。
+        **参考必须按这一块的「实际采集时刻」取**（`captured_at`，读块返回瞬间）：
+        麦克风在 `[captured_at - 输入延迟 - n/sr, captured_at - 输入延迟]` 这段时间收到的声音，
+        正好对应该窗口播出去的音频；`lead_s` 就是输入延迟（+微小余量）。
+        早期版本用的是 `ReferenceTap.stream()`（一次锚定后按样本计数推进）—— 那假设「每次调用都
+        恰好推进 n 个样本」，任何一次读慢/丢块都会让参考**永久偏掉**，真机实测 AEC 因此从未生效。
+        `captured_at=None` 时回落到 `stream()`（旧行为，仅给不起时刻的老调用/测试用）。
         """
         import numpy as np
 
         shape = getattr(block, "shape", None)
         blk = np.asarray(block, dtype=np.float32).reshape(-1)
-        # 用 stream()（一次锚定后按样本计数推进）：每块都用墙钟会让滤波器学糊，见 ReferenceTap.stream
-        ref = self.ref_tap.stream(blk.size, self.aec_lead_ms / 1000.0)
+        # 延迟优先用**在线估出的**（真实设备 520ms 量级），估不到才用配置/自动值
+        lead_s = (self.measured_lead_ms if self.measured_lead_ms is not None
+                  else self.aec_lead_ms) / 1000.0
+        if captured_at is not None:
+            # 按采集时刻取（正解）：与墙钟抖动、块间漂移无关
+            ref = self.ref_tap.segment(float(captured_at), blk.size, lead_s)
+        else:                                                # 兼容旧调用
+            ref = self.ref_tap.stream(blk.size, lead_s)
         out = self.aec.process(blk, ref)
         if self.suppressor is not None:
             out = self.suppressor.process(out, ref)   # AEC 之后再来一道：压住非线性残余回声
@@ -1444,7 +1470,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
         aec_engine = make_aec(aec, samplerate=16000)
         ref_tap = ReferenceTap(samplerate=16000)
-        suppressor = ResidualSuppressor()      # AEC 之后那一步：非线性路径也能压住残余回声
+        suppressor = ResidualSuppressor(samplerate=16000)   # AEC 之后那一步：压住非线性残余回声
         if sink == "null":
             sink_obj = NullSink()
             print(f"🔊 回声消除（AEC={aec_engine.name}）已开，但播放是 null（无声）→ 没有参考信号，等价直通")
