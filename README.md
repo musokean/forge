@@ -7,13 +7,15 @@
 <!-- 录好 GIF 后取消这行注释、并删掉本注释：![forge REPL — ask a question, watch the trace, interrupt mid-generation](docs/assets/forge-cli.gif) -->
 
 [![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/handcraft-agent.svg)](https://pypi.org/project/handcraft-agent/)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
 [中文版 README](README.zh-CN.md) · [docs/](docs/) · [Releases](https://github.com/musokean/forge/releases) · [CHANGELOG](CHANGELOG.md) · 373 tests, all offline
 
 ```bash
-pip install "git+https://github.com/musokean/forge.git"   # or: clone && pip install -e .
+pip install "handcraft-agent[server,device]"              # from PyPI (recommended)
+pip install "git+https://github.com/musokean/forge.git"   # or: from GitHub, or clone && pip install -e .
 export DEEPSEEK_API_KEY=sk-xxx
 forge                        # interactive REPL
 forge "帮我算 (3+5)*2"        # one-shot question
@@ -36,7 +38,8 @@ Most agent projects fall into two camps:
 ## Quick start
 
 ```bash
-# install from GitHub (or clone the repo and run: pip install -e .)
+pip install "handcraft-agent[server,device]"                                  # from PyPI
+# or from GitHub (or clone the repo and run: pip install -e .)
 pip install "git+https://github.com/musokean/forge.git"
 
 # set your API key (env var, picked up automatically)

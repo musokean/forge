@@ -8,6 +8,7 @@
 
 
 [![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/handcraft-agent.svg)](https://pypi.org/project/handcraft-agent/)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
@@ -20,8 +21,10 @@
 ## 一、快速开始
 
 ```bash
-# 1. 安装（二选一）
-#    ① 直接从 GitHub 装（无需 clone）
+# 1. 安装（三选一）
+#    ① 从 PyPI 装（推荐）
+pip install "handcraft-agent[server,device]"
+#    ② 直接从 GitHub 装（无需 clone）
 pip install "git+https://github.com/musokean/forge.git"
 #    ② 或 clone 后本地安装
 #    git clone https://github.com/musokean/forge.git && cd forge && pip install -e .
