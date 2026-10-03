@@ -616,11 +616,17 @@ class ScriptedGate:
     这样「按下 → 说 → 松开」的时序在 CI 里可复现，不需要真按键。
     """
 
-    def __init__(self, spans):
-        self.spans = spans
+    def __init__(self, spans=None, calls=None):
+        self.spans = spans                      # 时间驱动：[(起始秒, 是否按住), ...]
+        self.calls = calls                      # 轮询次数驱动：[bool, ...]（末尾保持）
+        self.n = 0
         self.t0 = None
 
     def held(self):
+        if self.calls is not None:              # 确定性模式：不受机器负载影响
+            i = min(self.n, len(self.calls) - 1)
+            self.n += 1
+            return bool(self.calls[i])
         if self.t0 is None:
             self.t0 = time.time()
         now = time.time() - self.t0
@@ -731,7 +737,8 @@ class TestNoHeadphoneModes(unittest.TestCase):
 
     def test_ptt_too_short_ignored(self):
         """误碰一下（0.15s）不该触发一轮。"""
-        gate = ScriptedGate([(0.3, True), (0.45, False)])
+        # 按**轮询次数**驱动（而非墙钟）：否则负载重时整段按住可能落在两次轮询之间 → flaky
+        gate = ScriptedGate(calls=[False, False, True, True, False])
         stats, events, _ = self._run(
             [("silence", 1.6)], _SeqSTT(finals=["不该出现"]), _ScriptAgent(),
             ptt=gate, timeout_s=2.5)
