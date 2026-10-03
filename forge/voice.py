@@ -160,10 +160,10 @@ class SoundDeviceSource(AudioSource):
         self._stream = None
 
     def open(self):
+        if self._stream is not None:      # 幂等：AEC 提前量要在开麦后算，可能与主循环重复调用
+            return self                   # 注意：守卫必须在 import 之前（CI 没装 sounddevice，否则守卫测试直接炸）
         import sounddevice as sd
 
-        if self._stream is not None:      # 幂等：AEC 提前量要在开麦后算，可能与主循环重复调用
-            return self
         self._stream = sd.InputStream(device=self.device, samplerate=self.samplerate,
                                       channels=1, dtype="float32")
         self._stream.start()
