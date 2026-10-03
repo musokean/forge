@@ -214,5 +214,35 @@ class TestConfigPathResolution(unittest.TestCase):
         self.assertEqual(os.path.abspath(config_path()), os.path.abspath(resolve_config_path()))
 
 
+class TestVoiceDefaults(unittest.TestCase):
+    """语音默认值：config/models.yaml 的 `voice` 段可改默认（命令行开关仍最优先）。
+
+    动机（2026-10-03 老大问「为啥不能用 forge --voice」）：不想每次手打 `--aec`。
+    """
+
+    def test_builtin_defaults_when_no_config(self):
+        from forge.voice import voice_defaults, VOICE_DEFAULTS
+        self.assertEqual(voice_defaults(None), VOICE_DEFAULTS)
+        self.assertEqual(voice_defaults({}), VOICE_DEFAULTS)
+        self.assertIsNone(VOICE_DEFAULTS["aec"], "内置默认不开 AEC（开了会强制进程内播放，属行为变更）")
+
+    def test_config_overrides_defaults(self):
+        from forge.voice import voice_defaults
+        vd = voice_defaults({"voice": {"aec": "nlms", "stt_model": "small", "barge_ms": 500}})
+        self.assertEqual(vd["aec"], "nlms")
+        self.assertEqual(vd["stt_model"], "small")
+        self.assertEqual(vd["barge_ms"], 500)
+        self.assertEqual(vd["sink"], "speaker", "没写的键应保持内置默认")
+
+    def test_unknown_and_bad_sections_ignored(self):
+        """只认已知键；`voice` 段写错类型也不能炸（配置坏了不该拖垮语音）。"""
+        from forge.voice import voice_defaults, VOICE_DEFAULTS
+        vd = voice_defaults({"voice": {"evil_key": "x", "aec": None}})
+        self.assertNotIn("evil_key", vd, "不认识键不能被塞进参数")
+        self.assertIsNone(vd["aec"], "显式 None 视为没配 → 用内置默认")
+        for bad in ({"voice": "不是字典"}, {"voice": 123}, {"voice": []}):
+            self.assertEqual(voice_defaults(bad), VOICE_DEFAULTS)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

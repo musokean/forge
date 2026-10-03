@@ -1051,6 +1051,38 @@ def play_audio(path: str) -> None:
                            check=False)
 
 
+# 语音默认值：**配置文件可以改默认，命令行开关仍然最优先**（优先级：命令行 > config > 这里）。
+# 这样在 `config/models.yaml` 里写一次 `voice: {aec: nlms}`，之后裸跑 `forge --voice` 就是
+# 「外放免耳机、不用按键、它说话时也能插话」——不用每次手打开关。
+# （2026-10-03 老大问「为啥不能用 forge --voice」，就是不想每次加 --aec。）
+VOICE_DEFAULTS = {
+    "audio_source": "mic",      # mic | file:<wav>（文件源用于自测/回归）
+    "sink": "speaker",          # speaker（AEC 模式会自动换成进程内播放）| null
+    "rounds": 0,                # 0 = 不限轮数
+    "barge_ms": 300,            # 抢话阈值：连续有声多久算插话
+    "stt_model": "base",        # whisper 模型（small 中文更准）
+    "aec": None,                # None/None = 不开；"nlms"（默认引擎）/ "pyaec" / "none"
+    "aec_lead_ms": 0,           # 0 = 自动按设备输入延迟推算
+    "half_duplex": False,       # 播放期间闭麦（免耳机但播放时不能插话）
+    "ptt": False,               # 按住空格说话
+}
+
+
+def voice_defaults(cfg: dict = None) -> dict:
+    """从配置里取语音默认值：**只认已知键**（避免配置里塞错东西污染参数）。
+
+    只有 `cfg["voice"]` 是 dict 且键在白名单里才生效；其余一律用内置默认。
+    """
+    out = dict(VOICE_DEFAULTS)
+    section = (cfg or {}).get("voice")
+    if not isinstance(section, dict):
+        return out
+    for k in VOICE_DEFAULTS:
+        if k in section and section[k] is not None:
+            out[k] = section[k]
+    return out
+
+
 def estimate_aec_lead_ms(source, margin_ms: int = 15, fallback_ms: int = 120,
                          lo: int = 40, hi: int = 180) -> int:
     """AEC 参考提前量 = **输入侧延迟 + 余量**（输出侧已在推参考时按流延迟补偿过）。

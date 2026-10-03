@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Voice mode Phase 2/3 (#11)** — streaming transcription, sentence-level TTS, and
   barge-in (speak while the agent is generating to interrupt it).
+- **Voice settings live in the config file now**, so plain `forge --voice` can be hands-free:
+  `config/models.yaml` accepts a `voice:` section (aec, aec_lead_ms, stt_model, barge_ms, sink,
+  half_duplex, ptt, rounds) and the command line still wins. Set `voice: {aec: nlms}` once and the
+  flags stop being something you retype every session.
 - **Acoustic echo cancellation (`forge --voice --aec`)** — hands-free barge-in: the microphone stays
   live while the answer plays, and the agent's own voice is subtracted using the audio it is
   playing as the reference (a pure-numpy block NLMS filter, no C extension; `pyaec`/`speexdsp` are

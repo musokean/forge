@@ -79,6 +79,10 @@ forge --voice --audio-source file:问句.wav --voice-loop --voice-rounds 5   # �
 半双工与 PTT 都能免耳机，但都**牺牲了「它说话时随时插话」**。AEC 用**正在播的音频当参考信号**，
 自适应估计回声路径（喇叭 → 空气 → 麦克风），从麦克风里减掉回声 —— 于是它说话时麦克风里只剩你。
 
+> **不用每次手打开关**：在 `config/models.yaml` 里写一次 `voice: {aec: nlms}`，之后裸跑
+> `forge --voice` 就是外放免耳机（命令行开关仍然最优先；`--aec none` 可临时关掉，
+> `--stt-model small` 之类同理）。
+
 ```bash
 forge --voice --aec            # 默认 nlms 引擎；也可 --aec pyaec（装了才可用）
 forge --voice --aec --aec-lead-ms 150   # 参考信号提前量按房间/设备微调

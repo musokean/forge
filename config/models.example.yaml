@@ -266,3 +266,14 @@ cua:
 #   reasoning: { model: deepseek,       label: 推理,   purpose: 复杂推理 / 深思熟虑时 }
 #   chinese:   { model: qwen,           label: 中文文案, purpose: 中文写作 / 润色 }
 #   fallback:  { model: deepseek_flash, label: 降级,   purpose: 主力通道失败时的备用 }
+
+
+# ── 语音模式默认值（forge --voice）───────────────────────────────
+# 优先级：命令行开关 > 这里的默认 > 代码内置默认。
+# 也就是说这里写一次，就不用每次手打 `--aec` / `--stt-model small` 了。
+voice:
+  aec: nlms            # 外放免耳机（真免手）：它说话时你也能插话。不想用改成 none 或删掉本行
+  aec_lead_ms: 0       # 0 = 自动（按设备实测输入延迟推算）；也可写死毫秒数
+  # stt_model: small   # 中文识别更准（首次会下载模型，几百 MB）
+  # barge_ms: 300      # 抢话阈值：连续有声多久算插话
+  # sink: speaker      # speaker（AEC 模式自动改用进程内播放）| null（静音自测）

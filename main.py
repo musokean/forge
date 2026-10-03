@@ -1484,28 +1484,38 @@ def main() -> None:
             return default
 
         _phase1 = "--voice-phase1" in sys.argv
-        # --aec [引擎]：裸写 = nlms；也可 `--aec pyaec`
+        # 语音默认值：命令行 > config/models.yaml 的 voice 段 > 内置默认
+        try:
+            from forge.config import load_config
+            from forge.voice import voice_defaults
+            _vd = voice_defaults(load_config())
+        except Exception:                                   # 配置坏了不该拖垮语音
+            from forge.voice import voice_defaults
+            _vd = voice_defaults()
+        # --aec [引擎]：裸写 = nlms；也可 `--aec pyaec`；`--aec none` 临时关掉
         _aec = None
         if "--aec" in argv:
             _i = argv.index("--aec")
             _nxt = argv[_i + 1] if _i + 1 < len(argv) else None
             _aec = _nxt if (_nxt and not _nxt.startswith("--")) else "nlms"
+        elif _vd["aec"]:                                    # 配置里开了 → 裸 `forge --voice` 也免手
+            _aec = _vd["aec"]
         # Phase 2/3 要**流式**跑：模型的增量文本正是「边生成边切句边合成」的输入（2026-09-29 修）
         agent = Agent(stream=not _phase1, show_spinner=False)
         from forge.voice import run_voice
 
         run_voice(agent,
-                  audio_source=_opt("--audio-source", "mic"),
-                  rounds=_opt("--voice-rounds", 0, int) or 0,
-                  sink=_opt("--voice-sink", "speaker"),
-                  barge_ms=_opt("--barge-ms", 300, int) or 300,
-                  stt_model=_opt("--stt-model", "base"),
+                  audio_source=_opt("--audio-source", _vd["audio_source"]),
+                  rounds=_opt("--voice-rounds", _vd["rounds"], int) or 0,
+                  sink=_opt("--voice-sink", _vd["sink"]),
+                  barge_ms=_opt("--barge-ms", _vd["barge_ms"], int) or 300,
+                  stt_model=_opt("--stt-model", _vd["stt_model"]),
                   stream=not _phase1,
                   file_loop=("--voice-loop" in argv),     # 文件源循环（多轮回归用）
-                  half_duplex=("--half-duplex" in argv),  # 外放不用耳机：播放期间闭麦（防自激）
-                  ptt=("--ptt" in argv),                  # 按住空格说话：不用耳机也能随时打断
+                  half_duplex=("--half-duplex" in argv) or bool(_vd["half_duplex"]),
+                  ptt=("--ptt" in argv) or bool(_vd["ptt"]),   # 按住空格说话（免耳机）
                   aec=_aec,                               # 回声消除（真免手：它说话时你也能插话）
-                  aec_lead_ms=_opt("--aec-lead-ms", 0, int) or 0)    # 0=自动：按设备输入延迟推算
+                  aec_lead_ms=_opt("--aec-lead-ms", _vd["aec_lead_ms"], int) or 0)  # 0=自动按设备推算
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000
