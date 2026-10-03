@@ -986,6 +986,42 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
     splitter = splitter or SentenceSplitter()
     speaker = StreamingSpeaker(tts, sink or NullSink())
 
+    async def _turn(text):
+        """一轮应答：边生成边切句边播；返回 (answer, 是否被抢话)。
+
+        抽出来是因为「抢话后用户那半句」要走**同一套**流程（曾经复制粘贴过一份，DRY 掉了）。
+        """
+        stats["rounds"] += 1
+        splitter.buf = ""
+        listener.clear()
+        listener.barge_in = False
+        speaker.start()
+
+        def _on_delta(chunk):
+            for sentence in splitter.feed(chunk):
+                emit("sentence", text=sentence)
+                speaker.say(sentence)
+
+        try:
+            answer = await agent.run(text, on_delta=_on_delta, interrupt_check=listener)
+        except TypeError:                      # 兼容旧 Agent（无 on_delta / interrupt_check）
+            answer = await agent.run(text)
+            _on_delta(answer)
+        for sentence in splitter.flush():
+            emit("sentence", text=sentence)
+            speaker.say(sentence)
+
+        # 生成期没被抢话 → 边播边继续盯（**播放期间插话才是最常发生的**）
+        hit = listener.barge_in or await_playback(speaker, listener, answer)
+        if hit:
+            stats["barge_ins"] += 1
+            speaker.stop()
+            emit("barge_in", partial_answer=answer)
+        else:
+            emit("answer_done", answer=answer)
+        stats["answers"].append(answer)
+        return answer, hit
+
     try:
         emit("ready", source=getattr(listener.source, "kind", "?"))
         last_activity = time.time()
@@ -1021,76 +1057,21 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                     emit("exit")
                     break
 
-                # ── 一轮应答：边生成边切句边播 ──
-                stats["rounds"] += 1
                 last_activity = time.time()
-                splitter.buf = ""
-                listener.clear()
-                listener.barge_in = False
-                speaker.start()
-                barge = {"hit": False}
+                _answer, hit = await _turn(text)
 
-                def _on_delta(chunk, _sp=speaker, _spl=splitter):
-                    for sentence in _spl.feed(chunk):
-                        emit("sentence", text=sentence)
-                        _sp.say(sentence)
-
-                try:
-                    answer = await agent.run(text, on_delta=_on_delta,
-                                             interrupt_check=listener)
-                except TypeError:
-                    # 兼容旧 Agent（不支持这两个 kwarg）：退回整段合成播放
-                    answer = await agent.run(text)
-                    for sentence in splitter.feed(answer) + splitter.flush():
-                        emit("sentence", text=sentence)
-                        speaker.say(sentence)
-                for sentence in splitter.flush():
-                    emit("sentence", text=sentence)
-                    speaker.say(sentence)
-
-                # 生成结束；若期间已被抢话 → 立即停播
-                if listener.barge_in:
-                    barge["hit"] = True
-                if not barge["hit"]:
-                    # 生成期没被抢话 → 边播边继续盯（**播放期间插话才是最常见的情况**）
-                    barge["hit"] = await_playback(speaker, listener, answer)
-                if barge["hit"]:
-                    stats["barge_ins"] += 1
-                    speaker.stop()
-                    emit("barge_in", partial_answer=answer)
-                else:
-                    emit("answer_done", answer=answer)
-                stats["answers"].append(answer)
-
-                # 抢话后：用户那半句已经被 listener 收着 → 直接进下一轮
-                if barge["hit"]:
+                # 抢话后：用户那半句已经被 listener 收着 → 直接进下一轮（不用再说一遍）
+                if hit:
                     pending = listener.take_utterance()
-                    emit("barge_pending", seconds=(len(pending) / listener.source.samplerate) if pending is not None else 0.0)
+                    seconds = len(pending) / listener.source.samplerate if pending is not None else 0.0
+                    emit("barge_pending", seconds=round(seconds, 2))
                     if pending is not None and len(pending) > 0:
                         text2 = stt.transcribe(pending).strip()
                         if text2:
                             stats["transcripts"].append(text2)
                             emit("user", text=text2)
-                            stats["rounds"] += 1
-                            splitter.buf = ""
-                            speaker.start()
-                            listener.clear()
-                            def _on_delta2(chunk, _sp=speaker, _spl=splitter):
-                                for s in _spl.feed(chunk):
-                                    emit("sentence", text=s)
-                                    _sp.say(s)
-                            answer2 = await agent.run(text2, on_delta=_on_delta2,
-                                                      interrupt_check=listener)
-                            for s in splitter.flush():
-                                emit("sentence", text=s)
-                                speaker.say(s)
-                            hit2 = listener.barge_in or await_playback(speaker, listener, answer2)
-                            if hit2:
-                                speaker.stop()
-                                stats["barge_ins"] += 1
-                            stats["answers"].append(answer2)
+                            await _turn(text2)
                 speaker.close()
-                last_activity = time.time()
             if not keep_alive and stats["rounds"] >= 1:
                 break
     finally:

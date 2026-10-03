@@ -1,17 +1,39 @@
 [build-system]
-requires = ["setuptools>=64"]
+requires = ["setuptools>=77"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "handcraft-agent"
 version = "0.4.1"
-description = "Config-driven multi-model AI agent with a readable codebase (learnable, production-ready)"
+description = "The readable ReAct agent: a ~235-line step loop you can follow, plus opt-in modules for sandboxing, memory and Computer Use."
+readme = "README.md"
 requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "musokean" }]
+keywords = ["ai-agent", "llm", "react", "multi-agent", "mcp", "deepseek", "openai-compatible", "computer-use"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Environment :: Console",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
 dependencies = [
     "openai>=1.0",
     "pyyaml>=6.0",
     "httpx>=0.24",  # src/llm.py 直接 import httpx（openai 的间接依赖不可靠，必须显式声明）
 ]
+
+[project.urls]
+Homepage = "https://github.com/musokean/forge"
+Repository = "https://github.com/musokean/forge"
+Changelog = "https://github.com/musokean/forge/blob/main/CHANGELOG.md"
+Issues = "https://github.com/musokean/forge/issues"
 
 [project.optional-dependencies]
 # #14 服务化才需要（forge --serve）：核心仍是零重依赖，不装也不影响 CLI/Web
