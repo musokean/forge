@@ -319,7 +319,7 @@ forge 的知识库是**自持的**：知识直接沉淀进库内条目（SQLite 
 handcraft-agent/
 ├── config/models.yaml    # 全部配置（模型/角色/辩论/路由/知识库/熔断/记忆/反思）
 ├── config/golden.yaml    # 黄金集（#13 评估用例，/eval add 可扩展，首次运行自动生成）
-├── src/
+├── forge/
 │   ├── config.py         # 配置加载 + resolve_model（角色/别名解析）
 │   ├── config_writer.py  # 安全写回配置（/config 面板底层）
 │   ├── llm.py            # openai SDK 网关 + 重试 + 降级 + 流式 + 熔断
@@ -378,10 +378,10 @@ handcraft-agent/
 
 | 能力 | 模块 | 一句话价值 | 入口 |
 |------|------|-----------|------|
-| **技能包 Skill** | `src/skills.py` | 预置「提示词片段 + 工具白名单」按需装配：`coding` 编程 / `writing` 写作 / `research` 调研 / `knowledge` 知识库，激活后只给模型相关工具（省 token + 减少误调） | `/skill` |
-| **长期记忆** | `src/memory.py` | 跨会话记住你是谁：说「我是/我喜欢/我习惯…」自动沉淀；每次提问自动召回相关记忆注入上下文——forge 不再是每次见面的陌生人 | `/memory` · `/remember` |
-| **反思自纠错** | `src/reflect.py` | A07 组合拳末环：答案生成后评审打分，低分带意见重答（默认关，`/config` 可开） | 配置 `reflect` |
-| **Supervisor 主管** | `src/orchestrator.py` | 路由从「只分类」升级「分派+合并」：复杂任务 planner 拆解 → 并行执行 → merger 合并最终答案；拆解失败自动降级直答 | 自动（路由判定 `plan`） |
+| **技能包 Skill** | `forge/skills.py` | 预置「提示词片段 + 工具白名单」按需装配：`coding` 编程 / `writing` 写作 / `research` 调研 / `knowledge` 知识库，激活后只给模型相关工具（省 token + 减少误调） | `/skill` |
+| **长期记忆** | `forge/memory.py` | 跨会话记住你是谁：说「我是/我喜欢/我习惯…」自动沉淀；每次提问自动召回相关记忆注入上下文——forge 不再是每次见面的陌生人 | `/memory` · `/remember` |
+| **反思自纠错** | `forge/reflect.py` | A07 组合拳末环：答案生成后评审打分，低分带意见重答（默认关，`/config` 可开） | 配置 `reflect` |
+| **Supervisor 主管** | `forge/orchestrator.py` | 路由从「只分类」升级「分派+合并」：复杂任务 planner 拆解 → 并行执行 → merger 合并最终答案；拆解失败自动降级直答 | 自动（路由判定 `plan`） |
 
 自动路由现在分四类：`single` 直答 · `parallel` 并行拆解 · `plan` 规划执行（supervisor）· `debate` 多角色辩论。
 
