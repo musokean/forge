@@ -162,6 +162,8 @@ class SoundDeviceSource(AudioSource):
     def open(self):
         import sounddevice as sd
 
+        if self._stream is not None:      # 幂等：AEC 提前量要在开麦后算，可能与主循环重复调用
+            return self
         self._stream = sd.InputStream(device=self.device, samplerate=self.samplerate,
                                       channels=1, dtype="float32")
         self._stream.start()
@@ -170,6 +172,14 @@ class SoundDeviceSource(AudioSource):
     def read(self, frames: int):
         data, _ = self._stream.read(frames)
         return data
+
+    @property
+    def latency_s(self) -> float:
+        """输入侧真实延迟（秒，PortAudio 报的）—— AEC 的参考提前量靠它推算，别拍常数。"""
+        try:
+            return float(getattr(self._stream, "latency", 0.0) or 0.0)
+        except Exception:                                   # pragma: no cover
+            return 0.0
 
     def close(self):
         if self._stream is not None:
@@ -1032,6 +1042,20 @@ def play_audio(path: str) -> None:
                            check=False)
 
 
+def estimate_aec_lead_ms(source, margin_ms: int = 15, fallback_ms: int = 120,
+                         lo: int = 40, hi: int = 180) -> int:
+    """AEC 参考提前量 = **输入侧延迟 + 余量**（输出侧已在推参考时按流延迟补偿过）。
+
+    为什么不能拍常数：本机实测输入延迟就有 90ms（Realtek 默认），拍 120 差 30ms、拍 0 差 90ms。
+    差得越多，自适应滤波器就得把越多抽头花在「对齐」而不是「消回声」上（长度有限，会拉低 ERLE）。
+    上下限 40~180ms：太小盖不住设备缓冲，太大则超出常规「设备缓冲 + 声学延迟」量级（滤波器按 200ms 设计）。
+    """
+    lat = getattr(source, "latency_s", None)
+    if not lat:
+        return fallback_ms                                     # 无延迟信息（文件源/假源）→ 保守值
+    return int(max(lo, min(hi, round(float(lat) * 1000) + margin_ms)))
+
+
 async def voice_loop(agent, stt: STTEngine, tts: TTSEngine, keep_alive: bool = True,
                      max_rounds: int = 0) -> None:
     """Phase 1：整句级语音对话（说一句 → 答一句）。保留给「只要最简链路」的场景。"""
@@ -1346,7 +1370,15 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
             print(f"🔊 回声消除（AEC={aec_engine.name}）已开，但播放是 null（无声）→ 没有参考信号，等价直通")
         else:
             sink_obj = SoundDeviceSink(samplerate=16000, tap=ref_tap)
-            print(f"🔊 回声消除（AEC={aec_engine.name}）· 进程内播放（sounddevice）· 参考提前量 {aec_lead_ms}ms")
+            if not aec_lead_ms and hasattr(src, "open") and not getattr(src, "latency_s", 0):
+                try:
+                    src.open()            # 先开麦才有真实输入延迟可读（2026-10-03：不开就读到 0 → 悄悄回落）
+                except Exception:
+                    pass
+            lead_ms = int(aec_lead_ms) if aec_lead_ms else estimate_aec_lead_ms(src)
+            in_ms = round((getattr(src, "latency_s", 0) or 0) * 1000)
+            who = "指定" if aec_lead_ms else f"自动·输入延迟{in_ms}ms+余量"
+            print(f"🔊 回声消除（AEC={aec_engine.name}）· 进程内播放（sounddevice）· 参考提前量 {lead_ms}ms（{who}）")
             print("   （外放时它说话你也能插话：麦克风里的回声会被减掉，不用闭麦也不用按键）")
     else:
         sink_obj = NullSink() if sink == "null" else FFplaySink()

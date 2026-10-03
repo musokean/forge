@@ -1466,7 +1466,8 @@ def main() -> None:
     #                               --half-duplex = 外放不用耳机（它说话时闭麦，防自激）
     #                               --ptt         = 按住空格说话（不按不采集，按下即打断）
     #                               --aec [引擎]  = 回声消除（nlms 默认；真免手，不用耳机也不用按键）
-    #                               --aec-lead-ms = 参考信号提前量（默认 120ms，按房间/设备微调）    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
+    #                               --aec-lead-ms = 参考信号提前量（默认 0=自动按设备输入延迟推算）
+    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
     #                               --audio-source file:xx.wav = 不用麦克风也能跑完整链路（自测/回归）
     #   forge --serve [--port 8080] HTTP API 服务（FastAPI 多会话 + 鉴权，需 server 可选依赖）
     #   forge "问题"                 单次问答
@@ -1504,7 +1505,7 @@ def main() -> None:
                   half_duplex=("--half-duplex" in argv),  # 外放不用耳机：播放期间闭麦（防自激）
                   ptt=("--ptt" in argv),                  # 按住空格说话：不用耳机也能随时打断
                   aec=_aec,                               # 回声消除（真免手：它说话时你也能插话）
-                  aec_lead_ms=_opt("--aec-lead-ms", 120, int) or 120)
+                  aec_lead_ms=_opt("--aec-lead-ms", 0, int) or 0)    # 0=自动：按设备输入延迟推算
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000

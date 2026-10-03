@@ -294,5 +294,43 @@ class TestSoundDeviceSink(unittest.TestCase):
         self.assertEqual(pcm.dtype, np.float32)
 
 
+class TestAecLeadEstimate(unittest.TestCase):
+    """参考提前量按设备延迟推算（别拍常数）。2026-10-03：本机实测输入延迟 90ms，硬编码 120 差 30ms。"""
+
+    class _Src:
+        def __init__(self, lat):
+            if lat is not None:
+                self.latency_s = lat
+
+    def test_uses_source_latency_plus_margin(self):
+        from forge.voice import estimate_aec_lead_ms
+        self.assertEqual(estimate_aec_lead_ms(self._Src(0.090)), 105)   # 90 + 15
+        self.assertEqual(estimate_aec_lead_ms(self._Src(0.0)), 120)     # 0 当无效 → 保守回落
+        self.assertEqual(estimate_aec_lead_ms(self._Src(0.18)), 180)    # 180+15 被上限截到 180
+        self.assertEqual(estimate_aec_lead_ms(self._Src(0.001)), 40)    # 下限 40
+
+    def test_falls_back_without_latency(self):
+        from forge.voice import estimate_aec_lead_ms
+        self.assertEqual(estimate_aec_lead_ms(self._Src(None)), 120)    # 文件源/假源没有延迟信息
+        self.assertEqual(estimate_aec_lead_ms(self._Src(None), fallback_ms=90), 90)
+
+    def test_margin_is_configurable(self):
+        from forge.voice import estimate_aec_lead_ms
+        self.assertEqual(estimate_aec_lead_ms(self._Src(0.090), margin_ms=0), 90)
+
+    def test_sounddevice_source_open_is_idempotent(self):
+        """`open()` 幂等：AEC 提前量需要在开麦后读延迟，主循环也会 open → 不能重复开流。
+
+        （不碰真设备：塞一个哨兵流对象，再调 open() 应原样返回、不覆盖。）
+        """
+        from forge.voice import SoundDeviceSource
+        s = SoundDeviceSource()
+        sentinel = object()
+        s._stream = sentinel
+        self.assertIs(s.open(), s)
+        self.assertIs(s._stream, sentinel)
+        self.assertIsInstance(s.latency_s, float)
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
