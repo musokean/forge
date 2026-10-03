@@ -1,10 +1,24 @@
-# forge · Forging ideas into action
+# forge
+
+**A ReAct agent you can actually read — the step loop is ~235 lines of straight-line Python, and the other 31 modules are opt-in layers you can skip.**
+
+**Zero heavy dependencies** (stdlib + `openai` + `pyyaml`). Every mechanism is spelled out instead of hidden: retry · fallback · circuit breaker · approval gates · command sandbox · structured logs · four-role Computer Use loop. Runs against any OpenAI-compatible endpoint — DeepSeek, Qwen, vLLM, Ollama, local models.
+
+<!-- 录好 GIF 后取消这行注释、并删掉本注释：![forge REPL — ask a question, watch the trace, interrupt mid-generation](docs/assets/forge-cli.gif) -->
 
 [![CI](https://github.com/musokean/forge/actions/workflows/ci.yml/badge.svg)](https://github.com/musokean/forge/actions/workflows/ci.yml)
 [![Python](https://img.shields.io/badge/python-3.9%20%7C%203.11%20%7C%203.13-blue.svg)](https://github.com/musokean/forge)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 
-[中文版 README](README.zh-CN.md)
+[中文版 README](README.zh-CN.md) · [docs/](docs/) · [Releases](https://github.com/musokean/forge/releases) · [CHANGELOG](CHANGELOG.md) · 373 tests, all offline
+
+```bash
+pip install "git+https://github.com/musokean/forge.git"   # or: clone && pip install -e .
+export DEEPSEEK_API_KEY=sk-xxx
+forge                        # interactive REPL
+forge "帮我算 (3+5)*2"        # one-shot question
+forge --web                  # browser chat UI (zero-dependency HTTP server)
+```
 
 ---
 
