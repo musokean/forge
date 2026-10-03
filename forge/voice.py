@@ -877,12 +877,16 @@ class StreamingSpeaker:
         self._thread = None
         self._current = None
         self._lock = threading.Lock()
+        self._epoch = 0            # 轮次代号：打断后旧代号的句子一律作废（见 start()/_retired）
         self.said = []
         self.spoken_chars = 0
         self.finished = threading.Event()
         self.finished.set()
 
     def start(self):
+        with self._lock:
+            self._epoch += 1                   # 新一轮 = 新代号 → 上一轮残留/合成中的句子作废
+            my_epoch = self._epoch
         self._stop.clear()
         # 清掉上一轮遗留（**包括 stop() 可能留下的哨兵**）：
         # 否则新一轮的工作线程一启动就吃到哨兵立刻退出 → 整段回答无声
@@ -893,37 +897,42 @@ class StreamingSpeaker:
         except queue.Empty:
             pass
         self.finished.clear()
-        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(my_epoch,), daemon=True)
         self._thread.start()
         return self
 
-    def _run(self):
-        while True:
+    def _retired(self, my_epoch: int) -> bool:
+        """本工作线程是否该退休：被打断（`_stop`）或被新一轮取代（代号变了）。
+
+        为什么必须有代号：`stop()` 只设 `_stop`，而下一轮 `start()` 会**清掉**它 —— 于是「合成
+        期间被打断」的那句合成完回来时看不到停止标记，就照播了（2026-10-03 老大听到的「把打断
+        前的回答也念了」）。代号一变旧句一律作废，不再依赖那个会被清掉的标记。
+        """
+        return self._stop.is_set() or my_epoch != self._epoch
+
+    def _run(self, my_epoch: int):
+        while not self._retired(my_epoch):
             try:
                 text = self._q.get(timeout=0.05)
             except queue.Empty:
-                if self._stop.is_set():
-                    break
                 continue
-            if text is None:
-                break
-            if self._stop.is_set():
+            if text is None or self._retired(my_epoch):
                 break
             try:
                 path = tempfile.mktemp(suffix=".mp3", dir=self.tmpdir)
                 self.tts.synthesize(text, path)
-                if self._stop.is_set():
-                    self._cleanup(path)
+                if self._retired(my_epoch):
+                    self._cleanup(path)      # 合成期间被打断 → 丢弃这一句，别漏播
                     break
                 handle = self.sink.play(path)
                 with self._lock:
                     self._current = handle
                 self.said.append(text)
                 self.spoken_chars += len(text)
-                # 等播完，但 stop() 时立刻退出
-                while handle.playing and not self._stop.is_set():
+                # 等播完，但被打断/被新一轮取代时立刻退出
+                while handle.playing and not self._retired(my_epoch):
                     time.sleep(0.01)
-                if self._stop.is_set():
+                if self._retired(my_epoch):
                     handle.stop()
                 self._cleanup(path)
             except Exception as e:
@@ -1225,6 +1234,22 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
         stats["answers"].append(answer)
         return answer, hit
 
+    async def _wait_speech_end(timeout_s: float = 10.0):
+        """等用户把这句话说完（收到 SPEECH_END）再返回音频；超时则有多少算多少。
+
+        为什么必须等：抢话判定只要 `barge_ms`（默认 300ms）就触发，**那一刻用户通常才说了开头
+        几个字**。原来立刻转写 → 只识别到「前半句」（2026-10-03 老大实测反馈）。等他停下再转，
+        「插话 = 说一句完整的新指令」才成立。用户已停（VAD 800ms 静默）时这里几乎立刻返回，
+        所以不为难人；10s 只是「一直在说」的安全网。
+        """
+        deadline = time.monotonic() + timeout_s
+        while time.monotonic() < deadline:
+            for ev in listener.drain_events():
+                if ev.kind == SPEECH_END:
+                    return listener.take_utterance()
+            await asyncio.sleep(0.05)
+        return listener.take_utterance()
+
     async def _respond(text):
         """一轮输入 → 一轮应答（含抢话后接着说的那一轮）。返回 False = 该退出了。"""
         stats["transcripts"].append(text)
@@ -1239,6 +1264,14 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
             pending = carry.pop("pending", None)
             if pending is None:
                 pending = listener.take_utterance()
+            # 抢话那一刻抓到的只是开头（barge_ms 就那么多）→ **等用户说完**再一起转写，
+            # 否则就是「只识别了前半句」（2026-10-03 实测）。两段音频按时间顺序拼起来。
+            rest = await _wait_speech_end()
+            if rest is not None and len(rest):
+                import numpy as np
+                head = np.asarray(pending, dtype=np.float32).reshape(-1) if (pending is not None and len(pending)) else None
+                pending = np.concatenate([head, np.asarray(rest, dtype=np.float32).reshape(-1)]) if head is not None \
+                    else np.asarray(rest, dtype=np.float32).reshape(-1)
             seconds = len(pending) / listener.source.samplerate if pending is not None else 0.0
             emit("barge_pending", seconds=round(seconds, 2))
             if pending is not None and len(pending) > 0:

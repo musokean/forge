@@ -6,6 +6,7 @@
 import asyncio
 import os
 import sys
+import threading
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -414,6 +415,43 @@ class TestStreamingSpeaker(unittest.TestCase):
         self.assertLessEqual(len(sink.played), 2, "未播的句子应被丢弃")
         sp.close()
 
+    def test_interrupt_drops_sentence_being_synthesized(self):
+        """回归：被打断时**正在合成**的那句，不该在下一轮漏播。
+
+        2026-10-03 老大听到「回答的时候把打断前的那句也念了」：`stop()` 只设停止标记，下一轮
+        `start()` 会把它**清掉** → 合成中的旧句回到工作线程时看不到标记 → 照播（竞态，看时序）。
+        改用**轮次代号（epoch）**后旧句一律作废，不再依赖会被清掉的标记。
+        """
+        class _GatedTTS:
+            def __init__(self):
+                self.gate = threading.Event()
+                self.entered = threading.Event()
+                self.paths = {}
+
+            def synthesize(self, text, out_path):
+                self.paths[text] = out_path
+                if text == "旧句。":
+                    self.entered.set()
+                    self.gate.wait(timeout=3)          # 卡在合成里，模拟「合成到一半被打断」
+                with open(out_path, "wb") as f:
+                    f.write(b"fake-mp3")
+                return out_path
+
+        tts = _GatedTTS()
+        sink = NullSink(audio_len=lambda p: 0.05)
+        sp = StreamingSpeaker(tts, sink).start()
+        sp.say("旧句。")
+        self.assertTrue(tts.entered.wait(timeout=2), "旧句应已进入合成")
+        sp.stop()                                      # 打断（旧句仍在合成中）
+        sp.start()                                     # 新一轮：会清掉停止标记 ← 原来漏播的入口
+        sp.say("新句。")
+        tts.gate.set()                                 # 放行旧句合成
+        self.assertTrue(sp.finish(timeout=4), "新一轮应能播完")
+        played = [x["path"] for x in sink.played]
+        self.assertIn(tts.paths.get("新句。"), played, "新一轮的句子必须播")
+        self.assertNotIn(tts.paths.get("旧句。"), played, "被打断时正在合成的旧句不该漏播")
+        sp.close()
+
     def test_finish_waits_for_drain(self):
         tts, sink = _QuietTTS(), NullSink(audio_len=lambda p: 0.05)
         sp = StreamingSpeaker(tts, sink).start()
@@ -562,6 +600,39 @@ class TestStreamingVoiceLoop(unittest.TestCase):
         self.assertTrue(sink.stops, "抢话要立刻停播（不能等这句念完）")
         self.assertGreaterEqual(len(stats["transcripts"]), 2,
                                 "抢话时已说的半句要保住并当成下一轮输入，不用用户再说一遍")
+
+    def test_barge_waits_for_the_user_to_finish(self):
+        """抢话后必须**等用户说完**再转写 —— 不能只抓抢话那一刻的前 300ms。
+
+        2026-10-03 老大实测：「感觉只识别了前半句」。根因是抢话阈值只有 barge_ms（300ms），
+        原代码在那一刻就把音频抓走转写了，用户后面说的话成了另一轮。
+        """
+        class _LenSTT:
+            """记录每次转写音频的时长（秒），用来断言「转的是整句还是半句」。"""
+
+            def __init__(self):
+                self.lens = []
+                self.finals = ["第一个问题", "插话说的完整一句话", "第三个问题"]
+
+            def transcribe(self, audio):
+                self.lens.append(len(audio) / 16000.0)
+                return self.finals.pop(0) if self.finals else ""
+
+            def transcribe_partial(self, audio):
+                return ""
+
+        sink = NullSink(audio_len=lambda p: 0.5)       # 每句播 0.5s，留出插话窗口
+        stt = _LenSTT()
+        agent = _ScriptAgent(answer="第一句。第二句。第三句。", chunk=4, delay=0.05)
+        stats, events, _ = self._run(
+            [("speech", 0.6), ("silence", 0.5),        # 第一轮：说完 → 生成 → 开始播
+             ("speech", 1.6), ("silence", 0.6),        # ← 播放期间插话，说了 1.6s（远超 300ms）
+             ("silence", 1.0)],
+            stt, agent, rounds=2, sink=sink, realtime=True, timeout_s=14.0)
+        self.assertGreaterEqual(stats["barge_ins"], 1, "应记录到抢话")
+        self.assertGreaterEqual(len(stt.lens), 2, "抢话后应把用户的话当成下一轮输入")
+        self.assertGreaterEqual(stt.lens[1], 1.0,
+                                "抢话后的转写应覆盖用户说完的整句（≥1.0s），而不是抢话那一刻的前 300ms")
 
     def test_barge_in_cancels_generation(self):
         """生成过程中插话 → 走 interrupt_check **取消当前生成**（返回已生成部分）。"""
