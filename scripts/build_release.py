@@ -92,6 +92,13 @@ def _copy_tree(src: str, dst: str) -> int:
             if f.endswith((".py", ".toml", ".txt", ".md")):
                 with open(s, "r", encoding="utf-8", errors="replace") as fr:
                     content = fr.read()
+                if rel.endswith(".md"):
+                    clean = _git_clean_version(rel)          # 优先：发布版（git 里那份）
+                    if clean is not None:
+                        content = clean
+                    else:                                     # 兜底：本地副本 + 剥治理痕迹
+                        content = _strip_vault_frontmatter(rel, content)
+                        content = _strip_vault_notes(content)
                 content = _desensitize(content)
                 with open(d, "w", encoding="utf-8", newline="") as fw:
                     fw.write(content)
@@ -133,6 +140,71 @@ def _write_example_config(dst: str):
     # 副本里也放一份脱敏 models.yaml（用户 clone 后直接填 key 就能跑）
     with open(os.path.join(dst, "config", "models.yaml"), "w", encoding="utf-8") as f:
         f.write(content)
+
+
+RE_VAULT_FRONTMATTER = re.compile(r"\A---\r?\n.*?\r?\n---\r?\n", re.S)
+
+
+def _strip_vault_frontmatter(rel: str, content: str) -> str:
+    """发布副本里剥掉 Obsidian/知识库治理 frontmatter。
+
+    为什么：README 与 `docs/*.md` 在知识库本地带 frontmatter（喂主库 DIKW 闸门），但**发布物**
+    （GitHub / PyPI 长描述 / zip 里的文档）不该带 —— 2026-10-03 实测 `release/forge/README.md`
+    开头就是 `--- title: forge · ...`，直接进 PyPI 长描述会很难看，也像半成品文档。
+    """
+    if not rel.endswith(".md"):
+        return content
+    m = RE_VAULT_FRONTMATTER.match(content)
+    return content[m.end():].lstrip("\r\n") if m else content
+
+
+RE_VAULT_NOTE_BLOCK = re.compile(r"(?m)^>\s*\*\*(?:本页为索引|DIKW 分层读法)\*\*.*(?:\n>.*)*\n?")
+
+
+def _strip_vault_notes(content: str) -> str:
+    """兜底：剥掉知识库治理痕迹（「本页为索引」/「DIKW 分层读法」块 + 内联 `[W 推断]` 标注）。"""
+    content = RE_VAULT_NOTE_BLOCK.sub("", content)
+    return content.replace(" `[W 推断]`", "")
+
+
+def _git_clean_version(rel: str):
+    """取 git 里该文件的版本（= 推到 GitHub 的干净版）；未跟踪/不可用则 None。
+
+    **为什么优先用 git 版**：本地工作副本带知识库治理痕迹（frontmatter / 「本页为索引」/
+    `[W 推断]` 标注），直接复制会把 Obsidian 内部标注打进发布物（README、docs、PyPI 长描述）。
+    git 版按定义是干净的 —— 这些治理块本来就靠 `skip-worktree` 挡在仓库之外。
+    """
+    try:
+        # 注意：Windows 下 rel 是 `docs\voice.md`，git 只认正斜杠 → 不转就能「静默回落」（实测）
+        r = subprocess.run(["git", "show", f"HEAD:{rel.replace(os.sep, '/')}"], cwd=BASE_DIR, capture_output=True,
+                           text=True, encoding="utf-8", errors="replace")
+        return r.stdout if (r.returncode == 0 and r.stdout) else None
+    except Exception:
+        return None
+
+
+def _check_no_frontmatter(dst: str) -> list:
+    """校验发布物里没有残留的治理 frontmatter（返回违规文件列表）。"""
+    bad = []
+    for root, _, files in os.walk(dst):
+        for f in files:
+            if not f.endswith(".md"):
+                continue
+            p = os.path.join(root, f)
+            try:
+                with open(p, "r", encoding="utf-8", errors="replace") as fr:
+                    text = fr.read()
+            except OSError:
+                continue
+            rel = os.path.relpath(p, dst)
+            if RE_VAULT_FRONTMATTER.match(text) or "本页为索引" in text \
+                    or "DIKW 分层读法" in text or "[W 推断]" in text:
+                bad.append(rel)
+                continue
+            clean = _git_clean_version(rel)          # 更强的口径：与 git HEAD 逐字一致
+            if clean is not None and text.replace("\r\n", "\n") != clean.replace("\r\n", "\n"):
+                bad.append(f"{rel}（与 git HEAD 版不一致：本地治理块漏进发布物？）")
+    return bad
 
 
 def _check_no_secrets(dst: str) -> bool:
@@ -221,6 +293,13 @@ def main():
         print("  ✅ 无真实 key 残留")
     else:
         print("  ❌ 存在 key 残留，中止")
+        sys.exit(1)
+
+    leaked = _check_no_frontmatter(out)
+    if not leaked:
+        print("  ✅ 无治理 frontmatter 残留（README/docs 是干净版）")
+    else:
+        print(f"  ❌ 这些文件仍带 frontmatter，中止：{leaked}")
         sys.exit(1)
 
     if not args.no_smoke:
