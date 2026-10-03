@@ -25,7 +25,8 @@ needs_numpy = unittest.skipUnless(HAS_NUMPY, "AEC 测试需要 numpy（pip insta
 
 sys.path.insert(0, ".")
 
-from forge.aec import (NlmsAec, NullAec, ReferenceTap, available_engines,  # noqa: E402
+from forge.aec import (NlmsAec, NullAec, ReferenceTap, ResidualSuppressor,  # noqa: E402
+                       available_engines,
                        make_aec)
 from forge.voice import (EnergyVAD, MicListener, NullSink,  # noqa: E402
                          SPEECH_END, ScriptedSource, streaming_voice_loop)
@@ -216,7 +217,7 @@ class _EchoSource:
 class _RecordingSink(NullSink):
     """模拟「播放」：把播出去的样本推给参考 tap（等价于 SoundDeviceSink 的参考通路）。"""
 
-    def __init__(self, tap, seconds_per_play=0.6):
+    def __init__(self, tap, seconds_per_play=6.0):
         super().__init__(seconds_per_play=seconds_per_play)
         self.tap = tap
         self._t = None
@@ -225,7 +226,9 @@ class _RecordingSink(NullSink):
         handle = super().play(path)
         # 用一段噪声代表「播出去的 TTS」，并**按真实播放的时间轴**分块入队（每块带它该被听到的时刻）：
         # `push(samples, t)` 支持未来时刻，因此不需要后台线程就能模拟「正在播」的时间轴。
-        pcm = speech_like(int(SR * self.seconds_per_play), amp=0.35)
+        # 推的音频**远长于**测试时长（6s）：全量跑时负载会让假麦克风的阻塞读变慢，
+        # 若只推 2s，慢读索取的窗口就会落在音频之外 → 参考变静音 → AEC 失效（用例假挂）
+        pcm = speech_like(int(SR * max(self.seconds_per_play, 6.0)), amp=0.35)
         blk = max(1, int(SR * 0.1))
         t0 = time.monotonic()
         for i in range(0, pcm.size, blk):
@@ -242,9 +245,12 @@ class TestAecInLoop(unittest.TestCase):
         sink = _RecordingSink(tap, seconds_per_play=2.0)
         src = _EchoSource(tap, near_end_at=near_end_at)
         aec = NlmsAec(samplerate=SR, frame_ms=20, filter_ms=120) if aec_on else None
+        # 用**真实 `--aec` 的那套组合**：AEC + 残余抑制器（非线性路径上真正干活的是后者）。
+        # 2026-10-03 真机结论：本机喇叭→麦克风是非线性路径，线性 AEC 消不掉，靠抑制器压住。
+        sup = ResidualSuppressor(samplerate=SR) if aec_on else None
         listener = MicListener(src, EnergyVAD(threshold=0.05, silence_ms=300, min_speech_ms=200),
                                barge_ms=300, aec=aec, ref_tap=tap if aec_on else None,
-                               aec_lead_ms=20)
+                               aec_lead_ms=20, suppressor=sup)
         listener.start()
         # 先让它「播」一段（tap 里因此有内容 → 假麦克风会录到回声）
         played = sink.play("x.mp3")
