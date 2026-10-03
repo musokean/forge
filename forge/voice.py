@@ -32,6 +32,8 @@ import threading
 import time
 import wave
 
+from .aec import AecEngine, ReferenceTap, make_aec
+
 # ══════════════════════════════════════════════════════════════════
 # 依赖检查（Phase 1 沿用）
 # ══════════════════════════════════════════════════════════════════
@@ -384,6 +386,83 @@ class NullSink(AudioSink):
         return NullPlayback(self.audio_len(path), on_stop=lambda: self.stops.append(time.time()))
 
 
+def decode_audio_pcm(path: str, samplerate: int = 16000) -> "np.ndarray":
+    """ffmpeg 解码成 float32 单声道 PCM —— AEC 要样本，ffplay 只有子进程拿不到。"""
+    import numpy as np
+
+    proc = subprocess.run(["ffmpeg", "-v", "error", "-i", path, "-f", "f32le", "-ac", "1",
+                           "-ar", str(int(samplerate)), "-"], capture_output=True)
+    if proc.returncode != 0 or not proc.stdout:
+        raise RuntimeError(f"解码失败：{path}（ffmpeg 退出码 {proc.returncode}）")
+    return np.frombuffer(proc.stdout, dtype="<f4").astype("float32")
+
+
+class _SoundDevicePlayback(PlaybackHandle):
+    """一段 PCM 的进程内播放；写入的同时把样本推给参考 tap（时间戳≈实际播出时刻）。"""
+
+    def __init__(self, sink, pcm):
+        self.sink = sink
+        self.pcm = pcm
+        self._stop = threading.Event()
+        self._ended = threading.Event()
+        self._thread = threading.Thread(target=self._run, daemon=True)
+        self._thread.start()
+
+    def _run(self):
+        import sounddevice as sd
+        try:
+            with sd.OutputStream(samplerate=self.sink.samplerate, channels=1, dtype="float32",
+                                 device=self.sink.device) as st:
+                lat = 0.0
+                try:
+                    lat = float(st.latency or 0.0)
+                except Exception:
+                    lat = 0.0
+                for i in range(0, len(self.pcm), self.sink.block):
+                    if self._stop.is_set():
+                        break
+                    chunk = self.pcm[i:i + self.sink.block]
+                    ref_len = st.write(chunk.reshape(-1, 1))
+                    self.sink.tap.push(chunk, time.monotonic() - lat)   # 参考信号
+        except Exception:
+            pass
+        finally:
+            self._ended.set()
+
+    def stop(self):
+        self._stop.set()
+        try:
+            self._thread.join(timeout=0.5)
+        except Exception:
+            pass
+
+    def wait(self, timeout=None) -> bool:
+        return self._ended.wait(timeout)
+
+    @property
+    def playing(self):
+        return (not self._stop.is_set()) and (not self._ended.is_set())
+
+
+class SoundDeviceSink(AudioSink):
+    """进程内播放（sounddevice）+ 参考信号 tap —— **AEC 模式必须用它**。
+
+    与 `FFplaySink` 的差别：ffplay 是外部进程，Python 拿不到它正在播的样本，就没法把自己的
+    声音从麦克风里减掉；这里播放与参考共用同一份 PCM，并记录播出时刻。代价是占用音频设备。
+    """
+
+    kind = "sounddevice"
+
+    def __init__(self, samplerate: int = 16000, tap=None, device=None, block_ms: int = 20):
+        self.samplerate = int(samplerate)
+        self.tap = tap if tap is not None else ReferenceTap(samplerate=samplerate)
+        self.device = device
+        self.block = max(1, int(self.samplerate * block_ms / 1000))
+
+    def play(self, path):
+        return _SoundDevicePlayback(self, decode_audio_pcm(path, self.samplerate))
+
+
 class FFplaySink(AudioSink):
     """真播放：ffplay 子进程；`stop()` 直接 terminate（这就是打断的即时性来源）。"""
 
@@ -531,10 +610,16 @@ class MicListener:
     `take_utterance()` 取出「已经说出来的那半句」的音频 —— 抢话后不用让用户再说一遍。
     """
 
-    def __init__(self, source: AudioSource, vad: EnergyVAD = None, barge_ms: int = 300):
+    def __init__(self, source: AudioSource, vad: EnergyVAD = None, barge_ms: int = 300,
+                 aec: "AecEngine" = None, ref_tap=None, aec_lead_ms: int = 120):
         self.source = source
         self.vad = vad or EnergyVAD()
         self.barge_ms = barge_ms
+        # AEC（回声消除）：外放时把「自己播出去的声音」从麦克风里减掉，避免自激——
+        # 这样它说话时仍能听见你插话（半双工/PTT 都做不到这点）。
+        self.aec = aec
+        self.ref_tap = ref_tap
+        self.aec_lead_ms = int(aec_lead_ms)
         self.events = queue.Queue()
         self._frames = []                 # 当前这句话的音频
         self._lock = threading.Lock()
@@ -566,6 +651,8 @@ class MicListener:
                 with self._lock:
                     if self._muted:                          # 闭麦：这一块当没听见
                         continue
+                if self.aec is not None and self.ref_tap is not None:
+                    block = self._cancel_echo(block)
                 for ev in self.vad.feed(block, self.source.block_ms):
                     if ev.kind == SPEECH_START:
                         self.speech_ms_run = 0
@@ -593,6 +680,24 @@ class MicListener:
                     self.speech_ms_run = 0
         finally:
             pass
+
+    def _cancel_echo(self, block):
+        """把「刚播出去的声音」从这一块麦克风里减掉（AEC），再交给 VAD/抢话判定。
+
+        参考段用 `lead_s` 粗对齐（设备缓冲 + 声学延迟）；滤波器长度本身覆盖延迟不确定性。
+        """
+        import numpy as np
+
+        shape = getattr(block, "shape", None)
+        blk = np.asarray(block, dtype=np.float32).reshape(-1)
+        # 用 stream()（一次锚定后按样本计数推进）：每块都用墙钟会让滤波器学糊，见 ReferenceTap.stream
+        ref = self.ref_tap.stream(blk.size, self.aec_lead_ms / 1000.0)
+        out = self.aec.process(blk, ref)
+        if not self.aec.converged():
+            # 冷启动收敛期：残差里还有回声，把它当静音 —— 否则会「自己触发自己」
+            # （真实产品同样有这段保护；代价是整场开头 ~300ms 听不见，用户说话一般不会正好卡在这）
+            return np.zeros_like(blk).reshape(shape) if shape else np.zeros_like(blk)
+        return out.reshape(shape) if shape else out
 
     def set_muted(self, muted: bool):
         """闭麦 / 开麦。闭麦期间读到的音频**直接丢**：不喂 VAD、不攒缓冲、不判抢话。
@@ -1010,7 +1115,7 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                                keep_alive: bool = True, max_rounds: int = 0,
                                on_event=None, barge_ms: int = 300, timeout_s: float = 60.0,
                                half_duplex: bool = False, guard_ms: int = 300,
-                               ptt=None) -> dict:
+                               ptt=None, aec=None, ref_tap=None, aec_lead_ms: int = 120) -> dict:
     """Phase 2/3 主循环：流式转写 → 流式应答（句级合成播放）→ 播放期间可抢话。
 
     **不用耳机也能用的两种模式**（默认全双工 = 假设你戴了耳机）：
@@ -1039,7 +1144,8 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
     if listener is None:
         if source is None:
             raise ValueError("需要 source 或 listener 之一（真麦克风用 SoundDeviceSource）")
-        listener = MicListener(source, EnergyVAD(), barge_ms=barge_ms)
+        listener = MicListener(source, EnergyVAD(), barge_ms=barge_ms,
+                               aec=aec, ref_tap=ref_tap, aec_lead_ms=aec_lead_ms)
     listener.start()
     splitter = splitter or SentenceSplitter()
     speaker = StreamingSpeaker(tts, sink or NullSink())
@@ -1187,6 +1293,8 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
             if not keep_alive and stats["rounds"] >= 1:
                 break
     finally:
+        if aec is not None:
+            stats["aec"] = aec.stats()
         try:
             speaker.stop()
             speaker.close()
@@ -1200,11 +1308,13 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
 def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "speaker",
               barge_ms: int = 300, stt: STTEngine = None, tts: TTSEngine = None,
               stt_model: str = "base", stream: bool = True, file_loop: bool = False,
-              half_duplex: bool = False, ptt: bool = False) -> dict:
+              half_duplex: bool = False, ptt: bool = False,
+              aec: str = None, aec_lead_ms: int = 120) -> dict:
     """命令行入口：`forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-sink null]`。
 
     `--audio-source file:xxx.wav` = **不用麦克风也能跑完整语音链路**（L2 自测/回归用）。
     `--half-duplex` = 外放不用耳机（播放期间闭麦）；`--ptt` = 按住空格说话。
+    `--aec [nlms|pyaec]` = **回声消除**（真免手：不用闭麦也不用按键，它说话时你插话照样听得见）。
     """
     missing = [m for m in _check_deps() if m not in ("sounddevice",)] if audio_source.startswith("file:") else _check_deps()
     if missing:
@@ -1225,7 +1335,21 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         print(f"🔊 语音模式（Phase 1 整句级）· 音频源 {audio_source}")
         asyncio.run(voice_loop(agent, stt, tts, keep_alive=True, max_rounds=rounds))
         return {"mode": "phase1"}
-    sink_obj = NullSink() if sink == "null" else FFplaySink()
+    aec_engine = None
+    ref_tap = None
+    if aec and str(aec).lower() not in ("none", "off", "0"):
+        # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
+        aec_engine = make_aec(aec, samplerate=16000)
+        ref_tap = ReferenceTap(samplerate=16000)
+        if sink == "null":
+            sink_obj = NullSink()
+            print(f"🔊 回声消除（AEC={aec_engine.name}）已开，但播放是 null（无声）→ 没有参考信号，等价直通")
+        else:
+            sink_obj = SoundDeviceSink(samplerate=16000, tap=ref_tap)
+            print(f"🔊 回声消除（AEC={aec_engine.name}）· 进程内播放（sounddevice）· 参考提前量 {aec_lead_ms}ms")
+            print("   （外放时它说话你也能插话：麦克风里的回声会被减掉，不用闭麦也不用按键）")
+    else:
+        sink_obj = NullSink() if sink == "null" else FFplaySink()
     mode = "按住空格说话（PTT）" if ptt else ("半双工（播放时闭麦）" if half_duplex else "全双工（建议戴耳机）")
     print(f"🔊 语音模式（Phase 2/3 流式 + 打断）· 音频源 {audio_source} · 播放 {sink} · "
           f"抢话阈值 {barge_ms}ms · {mode}")
@@ -1239,5 +1363,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
                                              max_rounds=rounds, barge_ms=barge_ms,
                                              half_duplex=half_duplex,
                                              ptt=KeyHold() if ptt else None,
+                                             aec=aec_engine, ref_tap=ref_tap,
+                                             aec_lead_ms=aec_lead_ms,
                                              on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}",
                                                                        flush=True)))

@@ -238,6 +238,10 @@ forge --voice                              # talk, and interrupt it mid-answer
   streaming order are covered in CI: no microphone, no model, no sound
 - **No microphone needed to try it**: `forge --voice --audio-source file:question.wav --voice-sink null`
   runs the whole chain (real Whisper, real model, real edge-tts) silently
+- **Acoustic echo cancellation** — `forge --voice --aec` keeps the microphone live while the answer
+  plays and subtracts the agent's own voice using the audio being played as the reference, so you can
+  interrupt hands-free: no muting, no push-to-talk key. Pure-numpy NLMS by default (no C extension);
+  it switches to in-process playback, since `ffplay` cannot hand over the samples it is playing.
 - **Speakers work too** — you do not have to wear headphones:
   `forge --voice --half-duplex` mutes the microphone while the answer plays (it still hears you
   while it is *thinking*, where there is no echo to confuse it), and `forge --voice --ptt` only

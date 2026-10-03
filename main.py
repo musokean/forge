@@ -1464,7 +1464,9 @@ def main() -> None:
     #                 [--voice-sink speaker|null] [--barge-ms N] [--stt-model NAME]
     #                 [--voice-phase1] [--half-duplex] [--ptt]
     #                               --half-duplex = 外放不用耳机（它说话时闭麦，防自激）
-    #                               --ptt         = 按住空格说话（不按不采集，按下即打断）    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
+    #                               --ptt         = 按住空格说话（不按不采集，按下即打断）
+    #                               --aec [引擎]  = 回声消除（nlms 默认；真免手，不用耳机也不用按键）
+    #                               --aec-lead-ms = 参考信号提前量（默认 120ms，按房间/设备微调）    #                               语音模式（#11）：Phase 2/3 流式 + 打断；
     #                               --audio-source file:xx.wav = 不用麦克风也能跑完整链路（自测/回归）
     #   forge --serve [--port 8080] HTTP API 服务（FastAPI 多会话 + 鉴权，需 server 可选依赖）
     #   forge "问题"                 单次问答
@@ -1481,6 +1483,12 @@ def main() -> None:
             return default
 
         _phase1 = "--voice-phase1" in sys.argv
+        # --aec [引擎]：裸写 = nlms；也可 `--aec pyaec`
+        _aec = None
+        if "--aec" in argv:
+            _i = argv.index("--aec")
+            _nxt = argv[_i + 1] if _i + 1 < len(argv) else None
+            _aec = _nxt if (_nxt and not _nxt.startswith("--")) else "nlms"
         # Phase 2/3 要**流式**跑：模型的增量文本正是「边生成边切句边合成」的输入（2026-09-29 修）
         agent = Agent(stream=not _phase1, show_spinner=False)
         from forge.voice import run_voice
@@ -1494,7 +1502,9 @@ def main() -> None:
                   stream=not _phase1,
                   file_loop=("--voice-loop" in argv),     # 文件源循环（多轮回归用）
                   half_duplex=("--half-duplex" in argv),  # 外放不用耳机：播放期间闭麦（防自激）
-                  ptt=("--ptt" in argv))                  # 按住空格说话：不用耳机也能随时打断
+                  ptt=("--ptt" in argv),                  # 按住空格说话：不用耳机也能随时打断
+                  aec=_aec,                               # 回声消除（真免手：它说话时你也能插话）
+                  aec_lead_ms=_opt("--aec-lead-ms", 120, int) or 120)
         return
     if len(sys.argv) > 1 and sys.argv[1] == "--web":
         port = 8000

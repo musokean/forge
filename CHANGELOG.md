@@ -11,6 +11,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Voice mode Phase 2/3 (#11)** — streaming transcription, sentence-level TTS, and
   barge-in (speak while the agent is generating to interrupt it).
+- **Acoustic echo cancellation (`forge --voice --aec`)** — hands-free barge-in: the microphone stays
+  live while the answer plays, and the agent's own voice is subtracted using the audio it is
+  playing as the reference (a pure-numpy block NLMS filter, no C extension; `pyaec`/`speexdsp` are
+  plugged in if installed). Defaults to in-process playback because `ffplay` cannot hand over the
+  samples it is playing. Measured on a synthetic echo path: ~30 dB echo suppression; with the
+  filter on, the echo alone no longer trips the voice-activity or barge-in detection while a real
+  interruption still does.
 - **Using voice without headphones** — speakers and a microphone self-excite (the TTS comes back
   in through the mic and looks like a new instruction), so there are now two modes for it:
   `--half-duplex` mutes the microphone while the answer plays and reopens it after the speaker
