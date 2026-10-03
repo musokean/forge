@@ -188,7 +188,13 @@ class TestRunVoice(unittest.TestCase):
 #   AudioSource（真麦克风 / 文件 / 脚本化合成音频）· AudioSink（真播放 / 只记录）
 #   VAD 与切句是纯状态机 → 「分段边界 / 打断时序 / 流式顺序」都能确定性复现
 # ══════════════════════════════════════════════════════════════════════
+import importlib.util  # noqa: E402
 import time  # noqa: E402
+
+# #11 语音测试要合成音频块（VAD/切句/打断都吃 numpy 数组）：CI 里装了 numpy 会真跑，
+# 没装的精简环境跳过而不是报错（同 fastapi/sounddevice 的处理方式）
+HAS_NUMPY = importlib.util.find_spec("numpy") is not None
+needs_numpy = unittest.skipUnless(HAS_NUMPY, "语音流式/打断测试需要 numpy（pip install numpy）")
 
 
 class _ScriptAgent:
@@ -264,6 +270,7 @@ def _wait_for(pred, timeout=3.0, interval=0.01):
     return False
 
 
+@needs_numpy
 class TestEnergyVAD(unittest.TestCase):
     """VAD 是纯状态机：喂合成的块就能验边界，不需要真声音。"""
 
@@ -400,6 +407,7 @@ class TestStreamingSpeaker(unittest.TestCase):
         sp.close()
 
 
+@needs_numpy
 class TestMicListener(unittest.TestCase):
     """说话期间仍在听的麦克风线程：产出事件、判定抢话、保住已说半句。"""
 
@@ -469,6 +477,7 @@ class TestMicListener(unittest.TestCase):
             lis.stop()
 
 
+@needs_numpy
 class TestStreamingVoiceLoop(unittest.TestCase):
     """Phase 2/3 主循环：流式转写 → 句级播放 → 播放/生成期间可抢话。"""
 
@@ -567,6 +576,7 @@ class TestStreamingVoiceLoop(unittest.TestCase):
             self.assertFalse(is_exit(w), w)
 
 
+@needs_numpy
 class TestFileSource(unittest.TestCase):
     """文件当麦克风：不用真麦克风也能跑完整链路（L2）。"""
 

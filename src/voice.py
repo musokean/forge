@@ -198,9 +198,8 @@ class FileSource(AudioSource):
         self._tail = 0
         self._data = None
         self._pos = 0
-        import numpy as np
-
-        self._np = np
+        # 注意：这里**不要** import numpy —— 构造不该依赖它（方法内按需导入即可），
+        # 否则「无 numpy 环境下能不能构造 FileSource」都测不了
 
     def _load(self):
         import numpy as np
