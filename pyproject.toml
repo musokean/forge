@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "handcraft-agent"
-version = "0.4.1"
+version = "0.5.0"
 description = "The readable ReAct agent: a ~235-line step loop you can follow, plus opt-in modules for sandboxing, memory and Computer Use."
 readme = "README.md"
 requires-python = ">=3.9"

@@ -59,7 +59,7 @@ except Exception:  # pragma: no cover
     HAS_UVICORN = False
 
 _BASE_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-__version__ = "0.4.1"  # 与 pyproject.toml 保持一致
+__version__ = "0.5.0"  # 与 pyproject.toml 保持一致
 
 MISSING_DEPS_HINT = (
     '缺少服务化依赖：请先安装 —— pip install "handcraft-agent[server]"'

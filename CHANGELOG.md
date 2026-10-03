@@ -5,42 +5,79 @@ All notable changes to forge are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-03
+
+Voice mode grew up, and the echo cancellation behind it was rebuilt against a real microphone.
 
 ### Added
 
-- **Voice mode Phase 2/3 (#11)** — streaming transcription, sentence-level TTS, and
-  barge-in (speak while the agent is generating to interrupt it).
-- **Voice settings live in the config file now**, so plain `forge --voice` can be hands-free:
-  `config/models.yaml` accepts a `voice:` section (aec, aec_lead_ms, stt_model, barge_ms, sink,
-  half_duplex, ptt, rounds) and the command line still wins. Set `voice: {aec: nlms}` once and the
-  flags stop being something you retype every session.
+- **Voice mode Phase 2/3 (#11)** — streaming transcription, sentence-level TTS, and barge-in (speak
+  while the agent is generating to interrupt it).
+- **Voice settings live in the config file**, so plain `forge --voice` can be hands-free.
+  `config/models.yaml` accepts a `voice:` section (`aec`, `aec_lead_ms`, `stt_model`, `barge_ms`,
+  `sink`, `half_duplex`, `ptt`, `rounds`), the command line still wins, and unknown keys are ignored.
+  Set it once and the flags stop being something you retype every session.
+- **Using voice without headphones** — speakers and a microphone self-excite, so there are two modes
+  for it: `--half-duplex` mutes the microphone while the answer plays and reopens it once the speaker
+  tail has died (you can still interrupt while it is thinking), and `--ptt` captures only while you
+  hold space — pressing it stops playback, releasing submits that utterance.
 - **Acoustic echo cancellation (`forge --voice --aec`)** — hands-free barge-in: the microphone stays
-  live while the answer plays, and the agent's own voice is subtracted using the audio it is
-  playing as the reference (a pure-numpy block NLMS filter, no C extension; `pyaec`/`speexdsp` are
-  plugged in if installed). Defaults to in-process playback because `ffplay` cannot hand over the
-  samples it is playing. Measured on a synthetic echo path: ~30 dB echo suppression; with the
-  filter on, the echo alone no longer trips the voice-activity or barge-in detection while a real
-  interruption still does.
-- **Using voice without headphones** — speakers and a microphone self-excite (the TTS comes back
-  in through the mic and looks like a new instruction), so there are now two modes for it:
-  `--half-duplex` mutes the microphone while the answer plays and reopens it after the speaker
-  tail dies (you can still interrupt while it is thinking), and `--ptt` captures only while you
-  hold space — pressing stops the playback, releasing submits that utterance.
+  live while the answer plays and the agent's own voice is subtracted, using the audio it is playing
+  as the reference through a pure-numpy block NLMS filter (no C extension; `pyaec`/`speexdsp` are used
+  if installed). In-process playback is the default for this mode, because `ffplay` cannot hand over
+  the samples it is playing.
+- **Residual echo suppression**, the stage after the filter. A laptop's speaker-to-microphone path is
+  not linear — driver enhancement, clipping, chassis vibration — and a linear filter cannot model it:
+  on the test machine the recording correlates with the played audio at 0.045, so no filter length
+  helps. The suppressor estimates how much of the microphone is echo from the two energies and ducks
+  it unless someone is clearly louder, which keeps the agent's voice out of the transcription while a
+  real interruption still gets through.
+- **Online delay estimation.** The reference has to line up with the microphone, and the total device
+  delay is a property of the hardware: 460-520ms here (output buffer, input buffer and acoustics)
+  against the 26ms the driver reports, so a constant cannot work. It is measured from the energy
+  envelopes, which survive a non-linear path even though the waveforms do not, using a long window
+  and a correlation curve accumulated across blocks — a single window's peak jumps between 250 and
+  786ms on a weak echo.
+- `docs/voice.md` — voice mode documentation, including which modes let you interrupt and what an
+  interruption does.
 
 ### Fixed
 
-- **`config/models.yaml` was ignored for anyone who installed the package.** Loader paths were
-  built from the package directory, which after `pip install` is `site-packages` — so a config in
-  the current directory was never read, and a placeholder one was auto-generated inside
-  `site-packages` instead, producing "missing API key" warnings. Resolution is now
-  `$FORGE_CONFIG` > `./config/models.yaml` > packaged config > `~/.forge/config/models.yaml`, and
-  `/key` writes to the same file the loader reads.
+- **`config/models.yaml` was ignored for anyone who installed the package.** Loader paths were built
+  from the package directory, which after `pip install` is `site-packages` — so a config in the
+  current directory was never read, and a placeholder one was auto-generated inside `site-packages`
+  instead, producing "missing API key" warnings. Resolution is now `$FORGE_CONFIG` >
+  `./config/models.yaml` > packaged config > `~/.forge/config/models.yaml`, and `/key` writes to the
+  same file the loader reads.
+- **Only the first half of an interrupted sentence was transcribed.** Barge-in transcribed the audio
+  the moment it crossed the threshold, so everything the user said afterwards — a few hundred
+  milliseconds of speech in practice — was lost. It now stops playback, waits for the user to finish,
+  and transcribes the stitched utterance.
+- **The sentence being synthesized was played after an interruption.** `StreamingSpeaker.stop()` only
+  set a flag that the next round cleared, so a sentence already in synthesis could still reach the
+  speaker. Rounds now carry an epoch and a worker whose epoch has passed retires.
+- **The echo canceller's reference was anchored to the wrong moment.** It was anchored when the
+  listener started, which is 100-300ms before playback begins, and then advanced by sample count —
+  so any late or dropped block shifted it permanently, and the filter could not converge at all on
+  the real machine. The reference is now looked up from the capture time of each microphone block.
+- **An echo canceller safety net that switched the feature off.** The bypass meant to stop a
+  misbehaving filter from making the link louder fired on any frame whose residual was louder than
+  its input, with no margin, so 54% of frames were bypassed during convergence. It now requires a
+  smoothed violation, and the real bound is a cap on the filter's norm.
 - `StreamingSpeaker.stop()` queued its sentinel even when the worker thread had not started, so an
   early stop (push-to-talk pressed before the first turn) left it in the queue and the next turn's
-  worker exited immediately — the answer played silently. — streaming transcription, sentence-level TTS, and
-  barge-in (speak while the agent is generating to interrupt it).
-- `docs/voice.md` — voice mode documentation.
+  worker exited immediately — the answer played silently.
+
+### Verified
+
+- 413 tests pass, 25 of them covering echo cancellation (synthetic path, weak echo, double-talk,
+  bypass, delay estimation).
+- On the test machine, with echo cancellation enabled, a playback leaves a residual of 0.0084
+  against the voice-activity threshold of 0.012 and the listener emits no `speech_end`: it no longer
+  transcribes its own speech. Delay estimates were 480, 486 and 493ms across a playback, a 13ms
+  spread, with correlations of 0.45 to 0.51.
+- The clean synthetic echo path converges to an ERLE of 55.7dB with nothing bypassed, which is what
+  says the reference timing is right.
 
 ## [0.4.1] - 2026-09-29
 
@@ -211,7 +248,8 @@ First public release.
 - **Config-driven**: switch models/roles via `config/models.yaml`, no code changes
 - Zero hard dependencies beyond `openai` + `httpx`
 
-[Unreleased]: https://github.com/musokean/forge/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/musokean/forge/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/musokean/forge/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/musokean/forge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/musokean/forge/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/musokean/forge/compare/v0.2.0...v0.3.0
