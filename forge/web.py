@@ -291,7 +291,33 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
     # ---- 路由 ----
+    def _safe(self, fn):
+        """把 handler 体包起来：**任何异常都必须回一个响应**。
+
+        为什么必须：`BaseHTTPRequestHandler` 遇到未捕获异常时是**直接关连接**、一个字节都不回
+        —— 客户端侧看到的就是 `ConnectionAbortedError: [WinError 10053]`（本机 CI 偶发的那条 flake
+        就是它：请求确实发了、服务端也确实在处理，中间抛错后连接被 RST，客户端只拿到"连接被中止"）。
+
+        另外：客户端提前断开（刷新/关标签）时 `wfile.write` 会抛 `ConnectionError` —— 这是**正常现象**，
+        不该让服务端打 traceback，也不该当成错误。
+        """
+        try:
+            fn()
+        except ConnectionError:
+            pass                      # 客户端先走了：正常，不是错
+        except Exception as e:        # 兜底：宁可回 500，也别让连接被 RST
+            try:
+                self._send_json({"error": f"{type(e).__name__}: {e}"}, 500)
+            except Exception:
+                pass
+
     def do_GET(self):
+        self._safe(self._do_get)
+
+    def do_POST(self):
+        self._safe(self._do_post)
+
+    def _do_get(self):
         if self.path in ("/", "/index.html"):
             self._send_html(_PAGE_HTML.replace("__TITLE__", PAGE_TITLE))
             return
@@ -300,9 +326,13 @@ class _Handler(BaseHTTPRequestHandler):
             return
         self._send_json({"error": "not found"}, 404)
 
-    def do_POST(self):
+    def _do_post(self):
+        # **无论哪个路由都先读完请求体**。为什么必须：服务端若带着「未读的接收数据」关闭连接，
+        # TCP 会发 **RST** 而不是 FIN —— 客户端正巧在此时读，就得到
+        # `ConnectionAbortedError: [WinError 10053]`（本机偶发 1/8 的那条 flake 的真凶：
+        # `/api/reset` 以前不读 body，于是 2 字节的 `{}` 留在缓冲区里）。
+        body = self._read_body()
         if self.path == "/api/chat":
-            body = self._read_body()
             message = (body.get("message") or "").strip()
             if not message:
                 self._send_json({"error": "empty message"}, 400)

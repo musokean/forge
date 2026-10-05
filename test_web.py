@@ -41,10 +41,17 @@ class WebServerBase(unittest.TestCase):
     def tearDownClass(cls):
         cls.web.stop()
 
+    def setUp(self):
+        # 每个用例都从「干净的 mock + 空的警告集合」开始：这些是**共享状态**，
+        # 上一个用例改过它（例如替换 agent.run），下一个用例不该继承（否则顺序一变结论就变 ✗）。
+        type(self).agent.run = AsyncMock(return_value="测试回复")
+        type(self).web._warned.clear()
+
     def _get(self, path):
         req = urllib.request.Request(self.base + path, headers={"Connection": "close"})
         opener = urllib.request.build_opener()  # 新连接池，杜绝 keep-alive 复用竞态（Windows 10053）
-        with opener.open(req, timeout=5) as r:
+        # 超时给足：这是**功能**测试，不该考「机器忙不忙」；真卡住照样会失败 ✓
+        with opener.open(req, timeout=20) as r:
             return r.status, r.read().decode("utf-8")
 
     def _post(self, path, payload):
@@ -52,7 +59,7 @@ class WebServerBase(unittest.TestCase):
         req = urllib.request.Request(self.base + path, data=data,
                                      headers={"Content-Type": "application/json", "Connection": "close"})
         opener = urllib.request.build_opener()  # 新连接池，杜绝 keep-alive 复用竞态（Windows 10053）
-        with opener.open(req, timeout=15) as r:
+        with opener.open(req, timeout=30) as r:
             return r.status, json.loads(r.read().decode("utf-8"))
 
 
@@ -102,6 +109,40 @@ class TestChatAPI(WebServerBase):
         status, d = self._post("/api/chat", {"message": "帮我写个文件"})
         self.assertEqual(status, 200)
         self.assertIn("Web 端被安全默认拒绝", d.get("warning", ""))
+
+
+class TestHandlerNeverAborts(WebServerBase):
+    """handler 内部抛错时，客户端必须拿到**响应**（500 + 错误信息），而不是「连接被中止」。
+
+    这正是本机偶发 `ConnectionAbortedError: [WinError 10053]` 的机制：
+    `BaseHTTPRequestHandler` 遇到未捕获异常会**直接关连接、一个字节都不回**，
+    客户端于是只看到「连接被 RST」。修法是 handler 外层兜底（forge/web.py 的 `_Handler._safe`）。
+    """
+
+    def test_handler_exception_becomes_500_not_abort(self):
+        # 注意：要在**真实路径内部**制造异常 —— `handle_reset` 是 start() 时就绑定好的，
+        # patch 外层 `web._handle_reset` 打不到它（写这条测试时先踩了一次 ✗）。
+        import urllib.error
+        with patch.object(self.web.agent, "reset", side_effect=RuntimeError("boom")):
+            try:
+                self._post("/api/reset", {})
+                self.fail("handler 抛错却回了 2xx")
+            except urllib.error.HTTPError as e:
+                # urllib 把非 2xx 当异常抛 —— 这本身就证明**收到了响应**（而不是连接被 RST ✓）
+                self.assertEqual(e.code, 500)
+                body = json.loads(e.read().decode("utf-8"))
+        self.assertIn("boom", body.get("error", ""))
+
+    def test_client_disconnect_does_not_kill_server(self):
+        """客户端提前断开（刷新/关标签）→ 服务端安静放过，后续请求照常。"""
+        import socket
+        port = int(self.web.url.rstrip("/").rsplit(":", 1)[-1])
+        s = socket.create_connection(("127.0.0.1", port), timeout=10)
+        s.sendall(b"POST /api/reset HTTP/1.0\r\nContent-Length: 2\r\n\r\n{}")
+        s.close()                                  # 不等响应就走
+        time.sleep(0.3)
+        status, _ = self._get("/api/status")        # 服务端仍然健在
+        self.assertEqual(status, 200)
 
 
 class TestStatusAPI(WebServerBase):
