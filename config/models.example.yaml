@@ -277,3 +277,16 @@ voice:
   # stt_model: small   # 中文识别更准（首次会下载模型，几百 MB）
   # barge_ms: 300      # 抢话阈值：连续有声多久算插话
   # sink: speaker      # speaker（AEC 模式自动改用进程内播放）| null（静音自测）
+
+# ── 人脸识别（#18 Phase 2，可选）────────────────────────────────────
+# 只存特征向量、不存原图；库文件默认 data/faces.db（.gitignore 已排除，不会进仓库）。
+# 特征提取需要一份 SFace 模型文件（约 37MB，不随 pip 包发布，程序也不会自己下载）：
+#   https://github.com/opencv/opencv_zoo/raw/main/models/face_recognition_sface/face_recognition_sface_2021dec.onnx
+# 放到 data/models/ 或 ~/.forge/models/，或用 FORGE_FACE_MODEL 指定路径。
+face:
+  db: "data/faces.db"
+  embedder: "auto"      # auto（有模型就用 SFace）| sface | stub（仅测试）| none（关掉）
+  # model: ""           # 显式指定模型路径；留空则按上面的顺序找
+  threshold: 0.36       # 余弦阈值（SFace 官方参考值 0.363）：低于它就回「未知」
+  margin: 0.03          # 最佳与次佳至少要差这么多，否则也回「未知」（防两个人被认混）
+  samples: 3            # face_enroll 默认抓几帧

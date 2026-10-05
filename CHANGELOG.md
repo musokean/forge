@@ -9,6 +9,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Face recognition (#18 Phase 2)** — the agent can now *recognise* people it has been introduced to, not
+  just see that someone is there. `face_enroll` stores feature vectors under a name, `face_who` answers
+  "who is this", `face_people` lists the roster and `face_forget` deletes someone completely. The identity
+  store keeps **only vectors, never images** (`data/faces.db`, already gitignored), matching is nearest
+  neighbour with both a cosine threshold and a best-versus-runner-up margin, and anything below either bar
+  comes back as *unknown* rather than a guess. The embedding model (SFace, which ships in opencv itself —
+  only the .onnx file is extra) is a swappable part: a stub embedder keeps the whole decision path testable
+  in CI with no model and no camera.
+
 - **Camera and face detection (#18 Phase 1)** — two tools, `look` and `look_image`: the agent can take
   one frame from a webcam and learn whether anyone is in front of it, and where the faces are. `look`
   returns only numbers and never writes to disk; saving an annotated image is a separate tool marked as

@@ -125,6 +125,12 @@ try:                                # #18 视觉（可选依赖）：装了 open
 except Exception:                   # 没装视觉依赖/加载失败：不挂工具，其它功能不受影响（不假装有）
     pass
 
+try:                                # #18 Phase 2 人脸识别：face_people/face_who/face_enroll/face_forget
+    from .faces import register_face_tools as _register_face_tools
+    _register_face_tools()
+except Exception:                   # 同理：没依赖就不挂（识别还需要另放模型文件，见 docs/faces.md）
+    pass
+
 
 def _safe_eval(expr: str):
     """只允许数字、四则运算、幂/取余、白名单函数与 pi/e 常量，拒绝任意代码。"""
