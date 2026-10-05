@@ -198,6 +198,18 @@ class TestMatch(unittest.TestCase):
         with self.assertRaises(FaceError):
             self.store.match([0.1] * 16)
 
+    def test_mixed_dimension_store_refuses_to_compare(self):
+        """换过提取器 → 库里维度混杂：必须明确报错，不能零填充后瞎比（那会认错人）。"""
+        self.store.enroll("alice", [vec_of("alice-1")])          # 128 维
+        self.store._conn.execute(
+            "INSERT INTO faces(person_id, dim, vec, created) VALUES "
+            "((SELECT id FROM people WHERE name = 'alice'), 8, ?, 'now')",
+            (np.zeros(8, dtype="float32").tobytes(),))
+        self.store._conn.commit()
+        with self.assertRaises(FaceError) as ctx:
+            self.store.match(vec_of("alice-1"))
+        self.assertIn("维度", str(ctx.exception))
+
     def test_stats_shape(self):
         self.store.enroll("alice", [vec_of("a1"), vec_of("a2")])
         st = self.store.stats()

@@ -331,18 +331,19 @@ class FaceStore:
         rows = self._conn.execute(
             "SELECT p.name AS name, f.dim AS dim, f.vec AS vec FROM faces f JOIN people p ON p.id = f.person_id"
         ).fetchall()
-        names, vecs = [], []
-        for r in rows:
-            names.append(r["name"])
-            vecs.append(np.frombuffer(r["vec"], dtype="float32"))
+        names = [r["name"] for r in rows]
+        vecs = [np.frombuffer(r["vec"], dtype="float32") for r in rows]
         if not vecs:
             return [], np.zeros((0, 0), dtype="float32")
-        dim = max(len(v) for v in vecs)
-        mat = np.zeros((len(vecs), dim), dtype="float32")
-        for i, v in enumerate(vecs):
-            if len(v) == dim:
-                mat[i] = v
-        return names, mat
+        dims = {int(v.shape[0]) for v in vecs}
+        if len(dims) > 1:
+            # 换过特征提取器就会出现这种情况。**必须明确报错**：零填充会让不同人比出假相似度，
+            # 静默地把某个人「认成别人」或「永远认不出」—— 比直接报错危险得多。
+            raise FaceError(
+                f"人脸库里存在 {len(dims)} 种维度的向量 {sorted(dims)} —— 通常是换过特征提取器导致的。"
+                "请按新提取器重新登记（face_forget 之后 face_enroll）。"
+            )
+        return names, np.vstack(vecs)
 
     def match(self, vec: Sequence[float], threshold: float = DEFAULT_THRESHOLD,
               margin: float = DEFAULT_MARGIN) -> Match:
