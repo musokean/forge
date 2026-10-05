@@ -33,6 +33,7 @@ except ModuleNotFoundError:   # pragma: no cover
 
 __all__ = [
     "CameraError",
+    "grab_frame",
     "haar_available",
     "Face",
     "Frame",
@@ -384,6 +385,16 @@ def capture(source: FrameSource, detector: Optional[FaceDetector] = None,
     return frame, faces
 
 
+def grab_frame(index: int = 0, detector: Optional[FaceDetector] = None, tries: int = 3):
+    """开摄像头 → 取一帧 → 一定关掉。三个工具要的都是这一步，别各写一遍（开/关必须配对）。"""
+    src = OpenCvFrameSource(index=int(index))
+    try:
+        src.open()
+        return capture(src, _default_detector() if detector is None else detector, tries=tries)
+    finally:
+        src.close()
+
+
 def probe_camera(index: int = 0) -> dict:
     """如实探测摄像头是否可用（不假装有）——给 `forge --doctor` 之类用。"""
     if np is None or cv2 is None:
@@ -475,12 +486,7 @@ def register_camera_tools() -> bool:
         read_only=True,
     )
     def look(index: int = 0, with_image: bool = False) -> str:
-        src = OpenCvFrameSource(index=int(index))
-        try:
-            src.open()
-            frame, faces = capture(src, _default_detector())
-        finally:
-            src.close()
+        frame, faces = grab_frame(index)
         return format_observation(observe(frame, faces, with_image=bool(with_image)))
 
     @tool(
@@ -500,12 +506,7 @@ def register_camera_tools() -> bool:
         read_only=False,                    # 落盘 = 有副作用，走 A06 写操作那一档
     )
     def look_image(path: str, index: int = 0) -> str:
-        src = OpenCvFrameSource(index=int(index))
-        try:
-            src.open()
-            frame, faces = capture(src, _default_detector())
-        finally:
-            src.close()
+        frame, faces = grab_frame(index)
         img = annotate(frame, faces)
         exp = os.path.expanduser(str(path))
         parent = os.path.dirname(os.path.abspath(exp))

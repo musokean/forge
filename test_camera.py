@@ -25,21 +25,6 @@ HAS_VISION = (importlib.util.find_spec("numpy") is not None
 needs_vision = unittest.skipUnless(HAS_VISION, "视觉测试需要 numpy + opencv（pip install \"handcraft-agent[vision]\"）")
 
 
-def _haar_ok():
-    """Haar 是否真可用 —— 光有 cv2 不够：OpenCV 5.x 移除了 Haar（见 camera.haar_available）。"""
-    if not HAS_VISION:
-        return False
-    try:
-        sys.path.insert(0, ".")
-        from forge.camera import haar_available as _h
-        return _h()
-    except Exception:
-        return False
-
-
-HAS_HAAR = _haar_ok()
-needs_haar = unittest.skipUnless(HAS_HAAR, "Haar 需要 opencv 4.x（5.x 已移除 Haar 级联）")
-
 sys.path.insert(0, ".")
 
 from forge.camera import (  # noqa: E402
@@ -47,6 +32,11 @@ from forge.camera import (  # noqa: E402
     StubFaceDetector, annotate, available, capture, encode_image_b64, format_observation,
     haar_available, observe, probe_camera,
 )
+
+
+# 光有 cv2 不够：OpenCV 5.x 移除了 Haar（见 camera.haar_available）
+HAS_HAAR = HAS_VISION and haar_available()
+needs_haar = unittest.skipUnless(HAS_HAAR, "Haar 需要 opencv 4.x（5.x 已移除 Haar 级联）")
 
 
 class DummyImage:
