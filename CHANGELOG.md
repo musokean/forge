@@ -9,6 +9,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Presence: who is here and who is speaking (#18 Phase 3)** — with several people in front of the
+  camera the agent now keeps a stable identity per person as they move, and answers who is talking.
+  A single microphone carries no direction information and the Haar detector returns no landmarks, so
+  this does not attempt source localisation or lip reading: it combines two signals that are actually
+  available, the frame-to-frame motion of the mouth region of each face and how large that face is,
+  and it says "not sure" when the leader is weak or only marginally ahead. Recognition is cached per
+  track and re-checked every N frames, so names do not flicker when one frame happens to miss.
+
 - **Face recognition (#18 Phase 2)** — the agent can now *recognise* people it has been introduced to, not
   just see that someone is there. `face_enroll` stores feature vectors under a name, `face_who` answers
   "who is this", `face_people` lists the roster and `face_forget` deletes someone completely. The identity

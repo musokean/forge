@@ -131,6 +131,12 @@ try:                                # #18 Phase 2 人脸识别：face_people/fac
 except Exception:                   # 同理：没依赖就不挂（识别还需要另放模型文件，见 docs/faces.md）
     pass
 
+try:                                # #18 Phase 3 在场感知：who_is_speaking（多人 + 谁在说话）
+    from .presence import register_presence_tools as _register_presence_tools
+    _register_presence_tools()
+except Exception:                   # 同理：没依赖就不挂
+    pass
+
 
 def _safe_eval(expr: str):
     """只允许数字、四则运算、幂/取余、白名单函数与 pi/e 常量，拒绝任意代码。"""

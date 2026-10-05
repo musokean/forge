@@ -55,6 +55,7 @@ jobs:
             test_aec.py \
             test_camera.py \
             test_faces.py \
+            test_presence.py \
             test_sandbox_logging.py \
             test_hardware.py \
             test_cli.py \
