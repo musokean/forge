@@ -119,6 +119,13 @@ _SAFE_FUNCS = {"abs": abs, "round": round, "min": min, "max": max, "pow": pow, "
 _SAFE_CONSTS = {"pi": math.pi, "e": math.e}
 
 
+try:                                # #18 视觉（可选依赖）：装了 opencv+numpy 才把 look/look_image 挂进工具列表
+    from .camera import register_camera_tools as _register_camera_tools
+    _register_camera_tools()
+except Exception:                   # 没装视觉依赖/加载失败：不挂工具，其它功能不受影响（不假装有）
+    pass
+
+
 def _safe_eval(expr: str):
     """只允许数字、四则运算、幂/取余、白名单函数与 pi/e 常量，拒绝任意代码。"""
     node = ast.parse(expr, mode="eval").body

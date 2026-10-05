@@ -5,6 +5,18 @@ All notable changes to forge are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Camera and face detection (#18 Phase 1)** — two tools, `look` and `look_image`: the agent can take
+  one frame from a webcam and learn whether anyone is in front of it, and where the faces are. `look`
+  returns only numbers and never writes to disk; saving an annotated image is a separate tool marked as
+  a write operation. A fake frame source and a stub detector keep the pipeline testable with no camera
+  at all (including in CI), and neither tool is registered when opencv/numpy are missing — the same
+  "do not pretend" rule the client executor follows. Ships as the `vision` extra, which caps opencv
+  below 5 because OpenCV 5 removed the Haar cascades.
+
 ## [0.5.0] - 2026-10-03
 
 Voice mode grew up, and the echo cancellation behind it was rebuilt against a real microphone.
@@ -248,6 +260,7 @@ First public release.
 - **Config-driven**: switch models/roles via `config/models.yaml`, no code changes
 - Zero hard dependencies beyond `openai` + `httpx`
 
+[Unreleased]: https://github.com/musokean/forge/compare/v0.5.0...HEAD
 [Unreleased]: https://github.com/musokean/forge/compare/v0.5.0...HEAD
 [0.5.0]: https://github.com/musokean/forge/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/musokean/forge/compare/v0.4.0...v0.4.1

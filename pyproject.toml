@@ -46,6 +46,13 @@ device = [
     "pyserial>=3.5",     # 串口/透传（COM5 · socket:// · loop://）
     "paho-mqtt>=2.0",    # MQTT 承载
 ]
+# #18 视觉（摄像头取帧 + 人脸检测）才需要：不装则该能力如实报不可用
+vision = [
+    # 封顶 <5：OpenCV 5.x **移除了 Haar 级联**（cv2.CascadeClassifier / cv2.objdetect / 随包模型文件都没了，
+    # 只剩 FaceDetectorYN），而 Haar 正是「零下载、CI 里也能真跑」的关键 —— 换 YuNet 要额外下载模型文件。
+    "opencv-python-headless>=4.9,<5",   # 取帧 + Haar 人脸检测（headless：不要 GUI 依赖）
+    "numpy>=1.24",                      # 帧数据
+]
 # #11 语音模式（Phase 1 整句级 + Phase 2/3 流式/打断）才需要
 voice = [
     "sounddevice>=0.4.6",   # 麦克风采集（真麦克风 / 也能喂文件）
