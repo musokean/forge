@@ -188,6 +188,18 @@ class TestMatch(unittest.TestCase):
         self.assertTrue(m.unknown, f"不该给名字，却给了 {m.name}（{m.score:.4f} vs {m.runner_up:.4f}）")
         self.assertIn("都像", m.reason)
 
+    def test_one_person_many_samples_is_still_recognised(self):
+        """**一个人登记多张样本时，也必须认得出他** ✗✓。
+
+        真机实测踩到的 bug：次佳若取「同一人的另一张样本」，margin 永远不过 → 谁都认不出来
+        （命中率 2/10）。比较单元必须是「人」而不是「样本」。
+        """
+        self.store.enroll("solo", [vec_of("s1"), vec_of("s2"), vec_of("s3")])
+        m = self.store.match(vec_of("s2"))
+        self.assertFalse(m.unknown, f"同一个人的样本之间不该触发 margin：{m.reason}")
+        self.assertEqual(m.name, "solo")
+        self.assertEqual(m.runner_up, 0.0, "库里只有一个人时，次佳应为 0（没有别人）")
+
     def test_empty_store_is_unknown_with_reason(self):
         m = self.store.match(vec_of("x"))
         self.assertTrue(m.unknown)
@@ -232,11 +244,22 @@ class TestEmbedderFactoryAndTools(unittest.TestCase):
         self.assertIn("opencv_zoo", msg)
 
     def test_auto_without_model_refuses_with_hint(self):
-        if sface_available():
-            self.skipTest("本机已装 SFace 模型，auto 会成功")
-        with self.assertRaises(FaceError) as ctx:
-            make_embedder("auto")
-        self.assertIn("没有可用的特征提取器", str(ctx.exception))
+        """`auto` 在**找不到模型**时必须明确报不可用（带去哪儿拿的提示）。
+
+        不依赖本机环境：显式把模型路径指到一个不存在的文件（本机装了真实模型时，
+        以前这里会 skip —— 测试随环境跳过是味道 ✗，改成环境无关 ✓）。
+        """
+        old_env = os.environ.get("FORGE_FACE_MODEL")
+        os.environ["FORGE_FACE_MODEL"] = os.path.join(tempfile.mkdtemp(), "missing.onnx")
+        try:
+            with self.assertRaises(FaceError) as ctx:
+                make_embedder("auto")
+            self.assertIn("没有可用的特征提取器", str(ctx.exception))
+        finally:
+            if old_env is None:
+                os.environ.pop("FORGE_FACE_MODEL", None)
+            else:
+                os.environ["FORGE_FACE_MODEL"] = old_env
 
     def test_none_embedder_refuses(self):
         with self.assertRaises(FaceError):

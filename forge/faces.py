@@ -27,7 +27,7 @@ import math
 import os
 import sqlite3
 from dataclasses import dataclass
-from typing import List, Optional, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 try:                          # 核心安装不含 numpy/cv2（只在 [vision]/[face] extra 里）
     import numpy as np
@@ -351,6 +351,11 @@ class FaceStore:
 
         为什么要 margin：两个人长相接近时，最佳分数可能略高于阈值但优势不明显 ——
         这时候认错人的代价比说「未知」大得多，所以宁可回未知。
+
+        **关键：比较单元是「人」，不是「样本」** ✗✓ —— 一个人常常登记了 3~5 张向量，
+        若拿"每张样本"排序，同一个人自己的第 2 张就会变成"次佳"，于是 margin 永远不过、
+        谁都认不出来（2026-10-03 真机实测命中率只有 2/10，原因就是这个 ✗）。
+        所以先按人取最高分，再在**人**之间比。
         """
         names, mat = self.vectors()
         if not names:
@@ -363,10 +368,14 @@ class FaceStore:
         norms = np.linalg.norm(mat, axis=1)
         norms[norms == 0] = 1.0
         sims = (mat @ q) / (norms * nq)
-        order = np.argsort(sims)[::-1]
-        best = float(sims[order[0]])
-        best_name = names[int(order[0])]
-        runner = float(sims[order[1]]) if len(order) > 1 else 0.0
+        per_person: Dict[str, float] = {}
+        for nm, s in zip(names, sims):
+            s = float(s)
+            if s > per_person.get(nm, -1.0):
+                per_person[nm] = s                      # 一个人取他自己最高的那张
+        ranked = sorted(per_person.items(), key=lambda kv: kv[1], reverse=True)
+        best_name, best = ranked[0]
+        runner = ranked[1][1] if len(ranked) > 1 else 0.0
         if best < threshold:
             return Match(score=best, runner_up=runner, unknown=True,
                          reason=f"最佳只有 {best:.3f}，低于阈值 {threshold:.2f}")

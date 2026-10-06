@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Two face-pipeline bugs found by testing on the real camera.** The detector ran a global histogram
+  equalisation over every frame; on a backlit face (the room here has a bright window behind the desk)
+  that turned one detectable face into zero, where the raw frame detected it and CLAHE detected it - the
+  face sat at 64 against 145 for the window behind it. Preprocessing is now CLAHE by default, selectable,
+  and the measurements are in the code comment. Separately, matching ranked stored *samples* rather than
+  *people*, so anyone enrolled with more than one sample always had their own second sample as the
+  runner-up and could never clear the margin test. A live session scored 2/10 before the fix and 10/10
+  after, with same-person similarity at 0.90-0.95 against a non-face floor of -0.07-0.29.
+
 ### Added
 
 - **Presence: who is here and who is speaking (#18 Phase 3)** — with several people in front of the

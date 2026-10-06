@@ -268,8 +268,12 @@ class HaarFaceDetector(FaceDetector):
 
     name = "haar"
 
-    def __init__(self, scale_factor: float = 1.1, min_neighbors: int = 5, min_size: int = 30):
+    def __init__(self, scale_factor: float = 1.1, min_neighbors: int = 5, min_size: int = 30,
+                 preprocess: str = "clahe"):
         _require_vision()
+        if preprocess not in ("clahe", "none", "hist"):
+            raise CameraError(f"preprocess 只能是 clahe / none / hist（收到 {preprocess!r}）")
+        self.preprocess = preprocess
         if not haar_available():
             raise CameraError(
                 "Haar 人脸检测不可用：需要 opencv **4.x**（5.x 已移除 Haar 级联与随包模型文件）。"
@@ -286,7 +290,7 @@ class HaarFaceDetector(FaceDetector):
 
     def detect(self, image) -> List[Face]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-        gray = cv2.equalizeHist(gray)                       # 光照不均时更稳
+        gray = self._preprocess(gray)
         rects = self._cascade.detectMultiScale(
             gray, scaleFactor=self.scale_factor, minNeighbors=self.min_neighbors,
             minSize=(self.min_size, self.min_size),
@@ -295,8 +299,26 @@ class HaarFaceDetector(FaceDetector):
         faces.sort(key=lambda f: f.area, reverse=True)      # 最大的排前面（后续「谁在说话」启发式要用）
         return faces
 
+    def _preprocess(self, gray):
+        """光照归一化。**默认 CLAHE（局部自适应），不要用全局 equalizeHist** ✗✓。
+
+        2026-10-03 真机实测（本机内置摄像头，背后是亮窗、脸在阴影里）：
+            原始灰图 检出 1 张 ✓ / `equalizeHist` **检出 0 张** ✗ / CLAHE 检出 1 张 ✓
+        —— 全局直方图均衡在**重度逆光**下把脸的中调推到暗端截断，把本来能检出的脸抹掉了。
+        （脸区亮度 64.3 vs 背后窗区 145.5，差 81 —— 全局均衡必定被那扇亮窗带偏 ✓。）
+
+        另外两种可选：`none`（完全不动，逆光下也能检出，但别的场景更弱）、
+        `hist`（旧的全局 equalizeHist，仅供对照，**不建议** ✗）。
+        """
+        if self.preprocess == "none":
+            return gray
+        if self.preprocess == "hist":
+            return cv2.equalizeHist(gray)                   # 保留旧行为，供 A/B 对照
+        clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+        return clahe.apply(gray)
+
     def describe(self) -> str:
-        return f"haar（scale={self.scale_factor} neighbors={self.min_neighbors}）"
+        return f"haar（scale={self.scale_factor} neighbors={self.min_neighbors} pre={self.preprocess}）"
 
 
 class StubFaceDetector(FaceDetector):

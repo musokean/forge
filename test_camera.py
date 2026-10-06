@@ -129,6 +129,28 @@ class TestDetector(unittest.TestCase):
         self.assertIn("haar", det.describe())
 
     @needs_haar
+    def test_preprocess_defaults_to_clahe(self):
+        """默认必须是 **CLAHE**（局部自适应），不是全局 equalizeHist ✗✓。
+
+        真机实测：逆光脸在原始灰图上能检出，被 equalizeHist 抹成 0 张（脸区 64 vs 背窗 145）。
+        """
+        det = HaarFaceDetector()
+        self.assertEqual(det.preprocess, "clahe")
+        self.assertIn("pre=clahe", det.describe())
+
+    @needs_haar
+    def test_preprocess_modes_are_selectable(self):
+        for mode in ("clahe", "none", "hist"):
+            det = HaarFaceDetector(preprocess=mode)
+            blank = np.zeros((120, 160, 3), dtype=np.uint8)
+            self.assertEqual(det.detect(blank), [], f"{mode} 模式对空图应返回空列表")
+
+    @needs_haar
+    def test_preprocess_rejects_unknown_mode(self):
+        with self.assertRaises(CameraError):
+            HaarFaceDetector(preprocess="magic")
+
+    @needs_haar
     def test_haar_on_noise_returns_a_list(self):
         """噪点图不保证有人脸，但必须返回 list（不能抛异常、不能返回 None）。"""
         det = HaarFaceDetector()
