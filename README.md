@@ -93,7 +93,7 @@ handcraft-agent/
 ├── forge/
 │   ├── agent.py          # ReAct loop + context mgmt + status bar + approval
 │   ├── llm.py            # openai gateway + retry + fallback + streaming + breaker
-│   ├── tools.py          # 20 tools + read-only tiers + KB tools
+│   ├── tools.py          # 31 tools + read-only tiers + KB tools
 │   ├── orchestrator.py   # parallel / debate / supervisor
 │   ├── router.py         # rule-first task routing (0ms for common intents)
 │   ├── knowledge.py      # SQLite+FTS5 knowledge base
@@ -277,10 +277,18 @@ whoever is there. Measured on the real machine, one frame, same instant:
 - **It says when it cannot tell** — with two people in frame the mouth-motion signal cannot separate
   who is speaking (the distributions overlap), so it says so instead of guessing. "I don't guess —
   guessing wrong is worse than not knowing" is the intended behaviour, not a limitation to patch over
-- **Enrol your own people**: `forge --voice --identify`, then ask it to enrol you. It captures **12
-  frames over ~5 seconds** so poses vary — measured on held-out poses, 12 frames recognise at 94%,
-  3 frames at 68%. More frames never caused a wrong match; it only ever says "not sure"
-- **Forget someone**: `face_forget <name>` deletes their vectors
+- **Enrolling someone — say it, don't configure it.** In `--identify` (or a plain `forge` session; the
+  camera just has to be reachable) stand in front of the camera and say *"enrol me as 满仓"*. It calls
+  `face_enroll`, which is a **write operation**, so it asks for approval first — answer `y`. Hold still
+  while it captures **12 frames across ~5 seconds** (varied poses matter: on held-out poses 12 frames
+  recognise at 94%, 3 frames at 68%; more frames never caused a wrong match, it only ever answers
+  "not sure"). Then check with *"who am I"*, or *"who is in the face store"* (`face_people` lists names
+  and vector counts — no images, because none are ever stored). **Get the person's agreement first**:
+  it is their face, and the tool is built to say so.
+- **Un-enrolling someone**: say *"remove 翠花 from the face store"* → `face_forget` → approve `[y/N]` →
+  every vector for that name is gone, and it cannot be recovered. Anything written with `face_note`
+  goes with it. If you would rather wipe everyone at once, deleting `~/.forge/faces.db` does exactly
+  that — the file holds nothing but vectors.
 - **Privacy**: only 128-dimension feature vectors are stored, never images; the store lives outside
   the repository at `~/.forge/faces.db`; the camera is opened only while `--identify` runs and the
   probe closes it between reads
