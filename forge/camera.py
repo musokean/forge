@@ -298,6 +298,10 @@ class HaarFaceDetector(FaceDetector):
         self.min_size = int(min_size)
 
     def detect(self, image) -> List[Face]:
+        with MODEL_LOCK:                        # cv2 级联对象同样不可多线程共用 ✗✓
+            return self._detect_locked(image)
+
+    def _detect_locked(self, image) -> List[Face]:
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         gray = self._preprocess(gray)
         rects = self._cascade.detectMultiScale(
@@ -371,7 +375,13 @@ class YuNetFaceDetector(FaceDetector):
     def detect_with_landmarks(self, image) -> List[Tuple[Face, "object"]]:
         """返回 `[(Face, row)]` —— `row` 是 YuNet 的原始输出行（框 + **5 个关键点** + 分数），
         交给 `cv2.FaceRecognizerSF.alignCrop` 做对齐用 ✓。
+
+        `MODEL_LOCK` 串行化 ✓：`setInputSize` 有状态 ✗ + OpenCV 模型非线程安全 ✗（真机崩过 ✓）。
         """
+        with MODEL_LOCK:
+            return self._detect_with_landmarks_locked(image)
+
+    def _detect_with_landmarks_locked(self, image) -> List[Tuple[Face, "object"]]:
         h, w = image.shape[:2]
         self._det.setInputSize((w, h))                  # 每帧都要设：分辨率可能变
         _ret, found = self._det.detect(image)
@@ -479,6 +489,15 @@ def capture(source: FrameSource, detector: Optional[FaceDetector] = None,
 # 进程级摄像头锁 ✓✓
 
 _CAMERA_LOCK = threading.RLock()
+MODEL_LOCK = threading.RLock()
+"""**模型推理**也要串行 ✓✓（与摄像头锁分开，但同一类问题 ✓）。
+
+2026-10-06 真机踩到 ✗✓：探针（后台线程）与工具 `face_who`（主线程）**共用同一个检测器/提取器对象**
+—— YuNet 的 `setInputSize` 是**有状态**的 ✗，OpenCV 的 `FaceRecognizerSF` 也不是线程安全的 ✗ →
+两个线程同时用 → **原生层直接终止进程**（rc=127、无 traceback ✗）。只锁摄像头**不够** ✗✓：
+必须把 `detect*` / `embed*` 这些**模型调用**也串行化 ✓。用 `RLock`（`detect` 会转调
+`detect_with_landmarks` ✓，可重入才不会自锁 ✓）。
+"""
 """**同一时刻只允许一个调用方开摄像头** ✓。
 
 2026-10-06 真机踩到 ✗✓：语音轮的「现场身份」探针（后台线程，~1Hz）与工具 `face_who`（主线程，

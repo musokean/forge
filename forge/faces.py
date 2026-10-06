@@ -175,7 +175,8 @@ class SFaceEmbedder(Embedder):
     def embed(self, face_image) -> List[float]:
         # SFace 要求 112x112 输入。这条路**不做对齐**（对齐需要关键点，Haar 给不出）——
         # 有 YuNet 时请走 embed_aligned ✓。
-        feat = self._rec.feature(cv2.resize(face_image, (112, 112)))
+        with _model_lock():                     # OpenCV 识别器非线程安全 ✗（真机崩过 ✓）
+            feat = self._rec.feature(cv2.resize(face_image, (112, 112)))
         return [float(x) for x in np.asarray(feat).reshape(-1)]
 
     def embed_aligned(self, image, row) -> List[float]:
@@ -186,8 +187,9 @@ class SFaceEmbedder(Embedder):
         实测（10 帧同一人）：对齐 中位 0.892 vs 零边距裁剪 0.862 → **+0.030** ✓，
         但带 25% 边距的普通裁剪也有 0.894 ✗ → 对齐**不比默认路径更好**，别指望它提精度 ✓。
         """
-        aligned = self._rec.alignCrop(image, row)
-        feat = self._rec.feature(aligned)
+        with _model_lock():                     # 同上 ✓
+            aligned = self._rec.alignCrop(image, row)
+            feat = self._rec.feature(aligned)
         return [float(x) for x in np.asarray(feat).reshape(-1)]
 
     def describe(self) -> str:
@@ -273,6 +275,13 @@ class Match:
     def as_dict(self) -> dict:
         return {"name": self.name, "score": round(self.score, 4),
                 "runner_up": round(self.runner_up, 4), "unknown": self.unknown, "reason": self.reason}
+
+
+def _model_lock():
+    """取 `camera.MODEL_LOCK` ✓ —— 惰性导入以免顶层循环引用 ✓（模型推理必须串行 ✓）。"""
+    from .camera import MODEL_LOCK
+
+    return MODEL_LOCK
 
 
 class _LockedConn:

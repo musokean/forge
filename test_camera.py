@@ -355,3 +355,45 @@ class TestCameraLockSerialisesOpeners(unittest.TestCase):
 
         self.assertEqual(state["peak"], 1, "同一时刻只能有一个开摄像头 ✓（否则 OpenCV 会崩掉整个进程 ✗✓）")
         self.assertEqual(state["now"], 0, "开/关必须配对 ✓")
+
+@needs_vision
+class TestModelInferenceIsSerialised(unittest.TestCase):
+    """★ **模型推理**必须串行 ✓✓（不只是摄像头 ✓）。
+
+    2026-10-06 真机踩到 ✗：探针（后台线程）与工具 `face_who`（主线程）共用同一个检测器 →
+    YuNet 的 `setInputSize` 有状态 ✗ + OpenCV 模型非线程安全 ✗ → **原生层终止整个进程**
+    （rc=127、无 traceback ✗）。只锁摄像头不够 ✗✓。这条测试用**假内层检测器**记录并发峰值 ✓，
+    不需要真模型 ✓：撤掉 `MODEL_LOCK` → 峰值变 2 → 必挂 ✓。
+    """
+
+    def test_detect_never_runs_concurrently(self):
+        import threading
+        import time
+
+        import forge.camera as C
+
+        state = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+
+        class FakeInner:
+            def setInputSize(self, size):
+                pass
+
+            def detect(self, image):
+                with guard:
+                    state["now"] += 1
+                    state["peak"] = max(state["peak"], state["now"])
+                time.sleep(0.05)                 # 模拟原生推理耗时 → 没锁就会重叠 ✓
+                with guard:
+                    state["now"] -= 1
+                return True, None                # 无脸即可（我们只测并发 ✓）
+
+        det = C.YuNetFaceDetector.__new__(C.YuNetFaceDetector)
+        det._det = FakeInner()
+        img = np.zeros((64, 64, 3), dtype=np.uint8)
+        ths = [threading.Thread(target=det.detect_with_landmarks, args=(img,)) for _ in range(4)]
+        for t in ths:
+            t.start()
+        for t in ths:
+            t.join(timeout=10)
+        self.assertEqual(state["peak"], 1, "模型推理必须串行 ✓（否则 OpenCV 会崩掉整个进程 ✗✓）")
