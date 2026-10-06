@@ -307,18 +307,35 @@ class PresenceMonitor:
         best = ranked[0]
         second = ranked[1].mouth if len(ranked) > 1 else 0.0
         who = best.name or f"未登记#{best.track_id}"
-        lead = "（音频判定有人在说话 ✓，视觉定位到动嘴最明显的人）" if audio else ""
+
+        # ★ 音频门控模式下：**"有没有人在说话"已经由音频定了** ✓✓ —— 视觉只负责"是谁"，
+        #   **绝不能用嘴动阈值去否决** ✗✓（2026-10-03 真机踩到：音频报"有人说话"的那 2 秒，
+        #   因为嘴动分 0.0281 < min_motion 0.03，工具回了"没人说话" —— 门控装反了 ✗）。
+        if audio:
+            if len(tracks) == 1:
+                return {**base, "speaking": tracks[0].name or f"未登记#{tracks[0].track_id}",
+                        "score": round(tracks[0].mouth, 4),
+                        "reason": f"音频判定有人在说话 ✓；画面里只有一个人，归给他"
+                                  f"（嘴动 {tracks[0].mouth:.4f}）"}
+            if best.mouth >= second * self.ratio and best.mouth > 0.0:
+                return {**base, "speaking": who, "score": round(best.mouth, 4),
+                        "reason": f"音频判定有人在说话 ✓ + 嘴部运动最明显且明显领先"
+                                  f"（{best.mouth:.4f} vs {second:.4f}）"}
+            return {**base, "speaking": None,
+                    "reason": f"音频判定有人在说话 ✓，但画面有 {len(tracks)} 个人、"
+                              f"嘴动分又分不出谁（{best.mouth:.4f} vs {second:.4f}）→ 不硬指"}
+
+        # 纯视觉模式：**只能说"谁动嘴最明显"，不能说"在说话"** ✗✓
         if best.mouth < self.min_motion:
             return {**base, "speaking": None,
                     "reason": f"分数最高的 {who} 只有 {best.mouth:.4f}，低于阈值 {self.min_motion}"
-                              f"（没人在明显动嘴{lead}）"}
+                              f"（没人在明显动嘴）"}
         if len(ranked) > 1 and best.mouth < second * self.ratio:
             return {**base, "speaking": None,
                     "reason": f"{who} 与另一个人的嘴动分太接近"
-                              f"（{best.mouth:.4f} vs {second:.4f}），分不清谁在说{lead}"}
+                              f"（{best.mouth:.4f} vs {second:.4f}），分不清谁在说"}
         return {**base, "speaking": who, "score": round(best.mouth, 4),
-                "reason": "音频判定有人在说话 + 嘴部运动最明显且明显领先" if audio
-                          else "嘴部运动最明显且明显领先"}
+                "reason": "嘴部运动最明显且明显领先"}
 
 
 def format_presence(snap: dict, seconds: float = 0.0) -> str:
@@ -333,7 +350,8 @@ def format_presence(snap: dict, seconds: float = 0.0) -> str:
     sp = snap.get("speaking")
     if sp:
         if snap.get("audio"):
-            return head + f"正在说话：{sp}（音频判定有人在说话 + 视觉定位，嘴部运动 {snap.get('score', 0):.4f}）。"
+            return head + (f"正在说话：{sp}（音频判定有人在说话 ✓ + 视觉定人，"
+                           f"嘴部运动 {snap.get('score', 0):.4f}）。")
         return head + f"嘴动最明显的是 {sp}（未接音频，**不能确认在说话** ✗；嘴部运动 {snap.get('score', 0):.4f}）。"
     return head + f"谁在说话：不确定 —— {snap.get('reason', '')}。"
 

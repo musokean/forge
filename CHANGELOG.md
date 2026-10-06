@@ -32,16 +32,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Audio-gated "who is speaking" (#18).** The visual mouth-motion score cannot separate speech from
+- **Audio-gated "who is speaking", and audio is never vetoed by vision (#18).** The visual mouth-motion score cannot separate speech from
   silence (the two distributions overlap - see Fixed below), so the question is now split between two
   modalities that each answer the half they are actually good at. `voice.LiveSpeechGate` reads the
   microphone on a background thread and reuses `EnergyVAD`'s threshold rather than inventing a second
   one, rolling over a 1.2 s window; it answers whether anyone is speaking right now. The vision layer
   then only has to answer who. When the gate says nobody is speaking, `who_is_speaking` returns exactly
   that no matter what the mouth-motion noise is doing; when it says someone is speaking, vision names
-  the person whose mouth moves most. Without a microphone the tool falls back to motion only and says
-  so in its wording rather than claiming speech, and a broken gate degrades instead of failing the
-  call.
+  the person whose mouth moves most. The first live run of this exposed a gate wired backwards: in the
+  two seconds where audio reported speech the tool still answered "nobody is speaking", because the
+  mouth-motion score (0.0281) sat below the vision-only threshold (0.03) and so vetoed the audio. Audio
+  decides whether, vision only decides who: with one person in frame the answer is that person (no
+  unreliable score needed), with several it is whoever leads clearly, and when the mouth scores cannot
+  separate them it says so instead of pointing at someone. Without a microphone the tool falls back to
+  motion only and says so in its wording rather than claiming speech, and a broken gate degrades
+  instead of failing the call. Known limit, documented: if the speaker is off camera while someone else
+  is in frame, the single-person rule attributes it incorrectly.
 
 - **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
   preferred when its model is present, falling back to Haar, and the choice is a `face.detector`

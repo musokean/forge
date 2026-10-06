@@ -49,6 +49,10 @@ def _face(x=40, y=30, w=80, h=80):
     return Face(x, y, w, h)
 
 
+def _shifted(img, delta):
+    return np.clip(img.astype(np.int16) + delta, 0, 255).astype(np.uint8)
+
+
 def _steady_shift_sequence(n, delta, h=120, w=160):
     """造 n 帧、每帧相对上一帧整体 +delta —— 稳态的「非嘴动」变化（框平移/曝光微变）。
 
@@ -264,6 +268,51 @@ class TestPresenceMonitor(unittest.TestCase):
         self.assertEqual(snap["mode"], "audio_gated")
         self.assertIs(snap["audio"], True)
         self.assertIn("音频判定有人在说话", format_presence(snap, 3.0))
+
+    @needs_numpy
+    def test_audio_speech_is_not_vetoed_by_the_motion_threshold(self):
+        """**本轮真机踩到的 bug** ✗✓：音频说"有人说话"时，视觉的嘴动阈值**不许否否决**。
+
+        真机现场：音频报"有人说话"的那 2 秒，嘴动分 0.0281 < min_motion 0.03 → 工具回了
+        "没人说话" ✗ —— 门控装反了。音频（可靠）定了"有没有"，视觉（不可靠）只该定"是谁"✓。
+        """
+        mon = PresenceMonitor(recognizer=None, min_motion=0.03, audio=lambda: True)
+        img = _img()
+        mon.observe(img, [_face()], now=0.0)
+        # 幅度调在纯视觉阈值以下（≈0.0196 < 0.03），但音频说有人在说话
+        for i in range(6):
+            mon.observe(_shifted(img, 5 * (i + 1)), [_face()], now=0.1 * (i + 1))
+        snap = mon.snapshot()
+        self.assertEqual(snap["speaking"], "未登记#1",
+                         "音频说有人在说话时，画面里只有一个人 → 就该归给他，不许被嘴动阈值否决 ✗")
+        self.assertIn("音频判定有人在说话", snap["reason"])
+
+    @needs_numpy
+    def test_audio_speech_with_several_faces_prefers_the_moving_one(self):
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001, audio=lambda: True)
+        img = _img()
+        faces = [_face(10, 10), _face(90, 10)]
+        mon.observe(img, faces, now=0.0)
+        # 变化**只落在第一张脸的框内**（x 15~75 ⊂ 脸#1 的 10~90 ✓）——
+        # 一开始我写成 45~115，横跨到了脸#2，于是"分不清"反而是**正确**行为 ✓✓
+        mon.observe(_talk_frame(img, 15, 75), faces, now=0.1)
+        snap = mon.snapshot()
+        self.assertEqual(snap["speaking"], "未登记#1", "多张脸时用嘴动分挑说话的那个 ✓")
+
+    @needs_numpy
+    def test_audio_speech_but_cannot_tell_who(self):
+        """音频说有人说话，但画面多人且分不出嘴动 → 明说"不硬指" ✓（不许瞎指一个 ✗）。"""
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001, ratio=3.0, audio=lambda: True)
+        img = _img()
+        faces = [_face(10, 10), _face(90, 10)]
+        mon.observe(img, faces, now=0.0)
+        moved = img.copy()
+        moved[80:105, 15:75] = 240
+        moved[80:105, 95:155] = 245          # 两张脸都在动、幅度接近
+        mon.observe(moved, faces, now=0.1)
+        snap = mon.snapshot()
+        self.assertIsNone(snap["speaking"])
+        self.assertIn("不硬指", snap["reason"])
 
     @needs_numpy
     def test_a_broken_gate_falls_back_instead_of_crashing(self):
