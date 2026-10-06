@@ -398,3 +398,46 @@ class TestTools(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@needs_numpy
+class TestFormatAmbient(unittest.TestCase):
+    """#18 紧凑现场措辞 + 探针的回答前措辞（含「只有一个人就是他」的规则 ✓）。"""
+
+    def test_no_people(self):
+        from forge.presence import format_ambient
+        self.assertEqual(format_ambient({"people": []}), "画面里没有人。")
+
+    def test_names_and_scores(self):
+        from forge.presence import format_ambient
+        s = format_ambient({"people": [{"name": "满仓", "score": 0.914},
+                                       {"name": "", "track_id": 3, "score": 0.5}]})
+        self.assertIn("在场 2 人", s)
+        self.assertIn("满仓（0.91）", s)
+        self.assertIn("未登记#3", s, "没名字只报「未登记#N」✓ 不硬编名字 ✗")
+
+    def _probe_with(self, people):
+        from forge.presence import PresenceProbe
+
+        class _M:
+            def snapshot(self):
+                return {"people": people}
+        p = PresenceProbe.__new__(PresenceProbe)     # 不启线程/不开摄像头
+        p._mon = _M()
+        return p
+
+    def test_one_person_is_the_speaker(self):
+        p = self._probe_with([{"name": "满仓", "score": 0.91}])
+        s = p.ambient_for_answer()
+        self.assertIn("刚才说话的是 满仓", s)
+
+    def test_several_people_refuse_to_point(self):
+        p = self._probe_with([{"name": "满仓", "score": 0.91}, {"name": "小李", "score": 0.88}])
+        s = p.ambient_for_answer()
+        self.assertIn("分不出", s, "多人时要说清「分不出来」✓")
+        self.assertIn("2 人", s)
+        self.assertNotIn("刚才说话的是 小李", s, "多人时不许硬指 ✗")
+
+    def test_speaker_off_camera(self):
+        p = self._probe_with([])
+        self.assertIn("不在画面里", p.ambient_for_answer())

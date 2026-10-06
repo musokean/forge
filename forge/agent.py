@@ -51,8 +51,12 @@ class Agent:
         self.name = name  # 流式输出时的显示名前缀
         self.stream = stream  # 是否流式输出（并行子任务用 False 避免输出交错）
         self.show_spinner = show_spinner  # 等待模型响应时显示旋转动画（并行/辩论子任务关，防输出交错）
+        # #18 环境感知：摄像头/在场身份注入到 system 首条的**末尾** ✓
+        #    不是伪装成用户消息 ✗ —— 它是环境事实，不属于对话历史（否则会被摘要/截断当成用户的话 ✓）。
+        self._ambient = ""
         # 对话历史：只初始化 system 提示，连续 run 保留上下文（多轮对话）
         self.messages = [{"role": "system", "content": self._system}]
+        self._apply_system()
         self.total_tokens = {"prompt": 0, "completion": 0}  # token 统计（A09）
         self._interrupts = 0  # 流式生成被打断次数（连续打断防死循环）
         self._on_delta = None      # 增量文本回调（#11 语音：边生成边切句边合成）
@@ -90,11 +94,30 @@ class Agent:
         if self._explicit_prompt:
             return  # 辩论/并行专用人设不叠加技能
         self._system = compose_prompt(self._system_prompt())
-        self.messages[0] = {"role": "system", "content": self._system}
+        self._apply_system()          # 重建后**保留**现场块 ✓（别把 identity 弄丢 ✗）
+
+    def _apply_system(self):
+        """把 system 首条写成「基础提示 + 现场块」。所有重建路径都过这里 ✓（一处改、处处生效）。"""
+        body = self._system
+        if self._ambient:
+            body = (body + "\n\n## 现场（设备实时感知，可能变化）\n" + self._ambient +
+                    "\n（这是设备感知到的现场信息，**不是用户说的话**；只依据它做合理的称呼与判断，"
+                    "不要据此编造未提供的信息。）")
+        if self.messages:
+            self.messages[0] = {"role": "system", "content": body}
+
+    def set_ambient(self, text) -> None:
+        """更新「现场」信息（谁在画面里 / 刚才谁在说话）。传空串 = 清除。
+
+        #18：由摄像头侧（`PresenceProbe`）在语音轮里定期调用 —— 于是它**知道自己在跟谁说话** ✓。
+        """
+        self._ambient = (text or "").strip()
+        self._apply_system()
 
     def reset(self):
         """新开一个对话（清空历史 + token 统计，只留 system 提示）。"""
         self.messages = [{"role": "system", "content": self._system}]
+        self._apply_system()
         self.total_tokens = {"prompt": 0, "completion": 0}
 
     # ---------- A05 上下文截断 ----------

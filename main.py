@@ -1492,6 +1492,7 @@ def main() -> None:
         except Exception:                                   # 配置坏了不该拖垮语音
             from forge.voice import voice_defaults
             _vd = voice_defaults()
+        # --identify：语音轮里开摄像头识别「现场是谁」，并把结果喂进对话（默认关 ✓ 隐私优先）
         # --aec [引擎]：裸写 = nlms；也可 `--aec pyaec`；`--aec none` 临时关掉
         _aec = None
         if "--aec" in argv:
@@ -1514,6 +1515,7 @@ def main() -> None:
                   file_loop=("--voice-loop" in argv),     # 文件源循环（多轮回归用）
                   half_duplex=("--half-duplex" in argv) or bool(_vd["half_duplex"]),
                   ptt=("--ptt" in argv) or bool(_vd["ptt"]),   # 按住空格说话（免耳机）
+                  identify=("--identify" in argv),        # #18 现场身份：开摄像头看一眼「在跟谁说话」（默认关 ✓）
                   aec=_aec,                               # 回声消除（真免手：它说话时你也能插话）
                   aec_lead_ms=_opt("--aec-lead-ms", _vd["aec_lead_ms"], int) or 0)  # 0=自动按设备推算
         return

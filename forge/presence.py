@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import math
+import threading
 import time
 from dataclasses import dataclass
 from typing import Callable, Dict, List, Optional, Sequence, Tuple
@@ -354,6 +355,134 @@ def format_presence(snap: dict, seconds: float = 0.0) -> str:
                            f"嘴部运动 {snap.get('score', 0):.4f}）。")
         return head + f"嘴动最明显的是 {sp}（未接音频，**不能确认在说话** ✗；嘴部运动 {snap.get('score', 0):.4f}）。"
     return head + f"谁在说话：不确定 —— {snap.get('reason', '')}。"
+
+
+def format_ambient(snap: dict, seconds: float = 0.0) -> str:
+    """紧凑版现场描述（**塞进每轮 prompt 用** ✓，比 `format_presence` 短得多）。
+
+    与 `format_presence` 的分工：那个是给**用户看**的完整结论 ✓（含判断依据与不确定说明 ✓）；
+    这个是给**模型看**的环境事实 ✓ —— 只说「画面里有谁、叫什么、多像」✓，
+    说不出的一律不说 ✗（没登记就只报「未登记#N」，没识别到就不报 ✓）。
+    """
+    ppl = snap.get("people") or []
+    if not ppl:
+        return "画面里没有人。"
+    parts = []
+    for p in ppl:
+        nm = p.get("name") or ("未登记#%s" % p.get("track_id", "?"))
+        sc = p.get("score")
+        parts.append(nm + ("（%.2f）" % float(sc) if isinstance(sc, (int, float)) else ""))
+    return "在场 %d 人：%s。" % (len(ppl), "、".join(parts))
+
+
+class PresenceProbe:
+    """后台按 ~1Hz 看一眼「画面里有谁、刚才谁在说话」，产出**一行可注入对话的现场描述** ✓。
+
+    为什么单独一个类：语音轮的主循环是**阻塞式**的（等转写、等模型、等播放 ✓），没法在里面
+    同步看摄像头 ✗ —— 于是用轻量后台线程定期看一眼，**每次现开现关**摄像头 ✓（不长期占设备 ✓）。
+
+    隐私：只读取**特征与相似度**，不保存任何图像 ✓；**默认不启动**，调用方显式 `start()` ✓
+    （语音轮里要 `--identify` 才开 ✓）。读不到脸 / 没模型 / 库是空的，都只影响「有没有名字」✓，
+    绝不假装有身份 ✗。
+    """
+
+    def __init__(self, interval_s: float = 1.0, index: int = 0, audio=None,
+                 store=None, embedder=None, detector=None, ttl_s: float = 2.5, look_s: float = 1.0):
+        _require_numpy()
+        self.interval_s = max(0.2, float(interval_s))
+        self.index = int(index)
+        self.look_s = float(look_s)
+        self.ticks = 0
+        self._ambient = ""
+        self._err = ""
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread = None
+        self._detector = detector
+        self._store = store
+        self._embedder = embedder
+        # 跟踪器 TTL 必须**大于轮询间隔** ✓，否则每次轮询都被当成新目标（1Hz 下 ttl<1s 就废 ✗）
+        self._mon = PresenceMonitor(recognizer=None, recognize_every=1,
+                                    ttl=max(ttl_s, self.interval_s * 2.5), audio=audio)
+        if self._store is not None and self._embedder is not None:
+            self._mon.recognizer = self._make_recognizer()
+
+    def _make_recognizer(self):
+        def recognize(image, box):
+            try:
+                m = self._store.match(self._embedder.embed(crop_face(image, box)))
+                return (m.name, m.score) if not m.unknown else ("", m.score)
+            except Exception:
+                return "", 0.0
+        return recognize
+
+    def start(self):
+        if self._thread is not None and self._thread.is_alive():
+            return self
+        self._stop.clear()
+        self._thread = threading.Thread(target=self._loop, daemon=True)
+        self._thread.start()
+        return self
+
+    def stop(self) -> None:
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            try:
+                t.join(timeout=2.0)
+            except Exception:
+                pass
+        self._thread = None
+
+    def _loop(self) -> None:
+        while not self._stop.is_set():
+            t0 = time.monotonic()
+            try:
+                self._tick()
+            except Exception as exc:                    # 探测失败**绝不能**拖垮语音轮 ✓
+                with self._lock:
+                    self._err = "%s: %s" % (type(exc).__name__, exc)
+            wait = self.interval_s - (time.monotonic() - t0)
+            if wait > 0:
+                self._stop.wait(wait)
+
+    def _tick(self) -> None:
+        from .camera import grab_frame, make_detector
+        if self._detector is None:
+            self._detector = make_detector()
+        frame, faces = grab_frame(index=self.index, detector=self._detector)
+        self._mon.observe(frame, faces)
+        text = format_ambient(self._mon.snapshot(), seconds=self.look_s)
+        self.ticks += 1
+        with self._lock:
+            self._ambient = text
+            self._err = ""
+
+    def ambient_for_answer(self) -> str:
+        """回答前用的现场信息：**在场有谁** + （画面里只有一个人时）**刚才说话的就是他** ✓。
+
+        多人时视觉嘴动分**分不出谁在说** ✗（实测分布重叠 ✓）→ 如实说「无法确定」✓，不硬指 ✗。
+        """
+        snap = self._mon.snapshot()
+        base = format_ambient(snap)
+        ppl = snap.get("people") or []
+        if len(ppl) == 1:
+            nm = ppl[0].get("name") or "画面里那位（未登记）"
+            return base + "刚才说话的是 %s（画面里只有一人 ✓）。" % nm
+        if len(ppl) > 1:
+            return base + "刚才有人说话，但画面里有 %d 人、嘴动分分不出是谁 ✗。" % len(ppl)
+        return base + "刚才说话的人不在画面里。"
+
+    @property
+    def ambient(self) -> str:
+        """最近一次的现场描述（可直接喂给 `Agent.set_ambient` ✓）。"""
+        with self._lock:
+            return self._ambient
+
+    @property
+    def error(self) -> str:
+        with self._lock:
+            return self._err
 
 
 # ══════════════════════════════════════════════════════════════════

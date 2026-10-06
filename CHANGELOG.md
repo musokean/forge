@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **现场身份（`--identify`）**：语音轮里以约 1Hz 看一眼「画面里是谁」（复用在场监视器 ✓，每次
+  现开现关摄像头 ✓、只读特征不存图 ✓），把结果注入 **system 首条**（`Agent.set_ambient` ✓，
+  与对话历史分开 ✓，`refresh_system`/`reset` 都不会丢 ✓）。**画面里只有一人时**会说明
+  「刚才说话的是他」✓；**多人时如实说嘴动分分不出是谁** ✓（不硬指 ✗）。摄像头出问题不影响语音 ✓。
+- **按人备注**：`face_note` 工具 + `face_people` 一并列出备注 ✓；随 `face_forget` 一起删除 ✓
+  （最小版按人记忆 ✓）。
+- `Agent.set_ambient()`：把「现场」（谁在画面里 / 刚才谁在说话）注入系统提示的公开入口 ✓。
+
 _Nothing yet._
 
 ## [0.5.1] - 2026-10-06

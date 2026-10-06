@@ -1304,7 +1304,7 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                                on_event=None, barge_ms: int = 300, timeout_s: float = 60.0,
                                half_duplex: bool = False, guard_ms: int = 300,
                                ptt=None, aec=None, ref_tap=None, aec_lead_ms: int = 120,
-                               suppressor=None) -> dict:
+                               suppressor=None, ambient_fn=None) -> dict:
     """Phase 2/3 主循环：流式转写 → 流式应答（句级合成播放）→ 播放期间可抢话。
 
     **不用耳机也能用的两种模式**（默认全双工 = 假设你戴了耳机）：
@@ -1468,6 +1468,11 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                     if audio is None or secs < 0.2:
                         emit("too_short", speech_ms=int(secs * 1000))
                     else:
+                        if ambient_fn is not None:
+                            try:
+                                agent.set_ambient(ambient_fn())   # #18：回答前刷新「现场是谁」✓
+                            except Exception:
+                                pass
                         text = stt.transcribe(audio).strip()
                         if not text:
                             emit("empty")
@@ -1496,6 +1501,11 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                 if (ev.elapsed or 0) < 200 or audio is None or len(audio) < int(0.1 * listener.source.samplerate):
                     emit("too_short", speech_ms=ev.elapsed)
                     continue
+                if ambient_fn is not None:
+                    try:
+                        agent.set_ambient(ambient_fn())      # #18：回答前刷新「现场是谁」✓
+                    except Exception:
+                        pass
                 text = stt.transcribe(audio).strip()
                 if not text:
                     emit("empty")
@@ -1522,7 +1532,7 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
               barge_ms: int = 300, stt: STTEngine = None, tts: TTSEngine = None,
               stt_model: str = "base", stream: bool = True, file_loop: bool = False,
               half_duplex: bool = False, ptt: bool = False,
-              aec: str = None, aec_lead_ms: int = 120) -> dict:
+              aec: str = None, aec_lead_ms: int = 120, identify: bool = False) -> dict:
     """命令行入口：`forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-sink null]`。
 
     `--audio-source file:xxx.wav` = **不用麦克风也能跑完整语音链路**（L2 自测/回归用）。
@@ -1555,6 +1565,24 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
         aec_engine = make_aec(aec, samplerate=16000)
         ref_tap = ReferenceTap(samplerate=16000)
+    # #18 身份感知（**显式开启才开摄像头** ✓，隐私默认关 ✓）：
+    #   后台 ~1Hz 看一眼「画面里有谁」，结果在每轮回答前注入 system 提示 → 它就知道在跟谁说话 ✓
+    probe = None
+    if identify:
+        try:
+            from .faces import FaceStore, face_defaults, make_embedder
+            from .presence import PresenceProbe
+            _fd = face_defaults()
+            _store = _emb = None
+            try:
+                _store, _emb = FaceStore(_fd["db"]), make_embedder()
+            except Exception:
+                _store = _emb = None            # 没模型/库为空 → 只报「几个人」✓，不假装有名字 ✗
+            probe = PresenceProbe(interval_s=1.0, store=_store, embedder=_emb).start()
+            emit("identify_on", interval_s=1.0)
+        except Exception as exc:                # 摄像头侧出问题**不能**拖垮语音 ✓
+            emit("identify_unavailable", error=str(exc)[:80])
+            probe = None
         suppressor = ResidualSuppressor(samplerate=16000)   # AEC 之后那一步：压住非线性残余回声
         if sink == "null":
             sink_obj = NullSink()
@@ -1591,7 +1619,9 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         print("   （说「退出」/「exit」结束；**它说话时你直接开口就能插话**。消得不够就调 --aec-lead-ms 或降音量）")
     else:
         print("   （说「退出」/「exit」结束；说话时可直接插话打断；外放请加 --half-duplex / --ptt / --aec）")
-    return asyncio.run(streaming_voice_loop(agent, stt, tts, source=src, sink=sink_obj,
+    return asyncio.run(streaming_voice_loop(
+        agent, ambient_fn=(probe.ambient_for_answer if probe is not None else None),
+        stt=stt, tts=tts, source=src, sink=sink_obj,
                                              max_rounds=rounds, barge_ms=barge_ms,
                                              half_duplex=half_duplex,
                                              ptt=KeyHold() if ptt else None,

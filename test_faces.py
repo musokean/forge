@@ -379,3 +379,50 @@ class TestEmbedderFactoryAndTools(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNotes(unittest.TestCase):
+    """#18 按人记忆最小版：备注写/读/随人删除 ✓。"""
+
+    def test_note_roundtrip_and_people_lists_it(self):
+        tmp = os.path.join(tempfile.mkdtemp(), "n.db")
+        st = FaceStore(tmp)
+        try:
+            st.enroll("满仓", [np.ones(128, dtype=np.float32)])
+            st.set_note("满仓", "喜欢冰美式")
+            self.assertEqual(st.get_note("满仓"), "喜欢冰美式")
+            ppl = st.people()
+            self.assertEqual(len(ppl), 1)
+            self.assertEqual(ppl[0]["note"], "喜欢冰美式")
+            self.assertEqual(ppl[0]["faces"], 1)
+        finally:
+            st.close()
+
+    def test_note_on_unknown_name_raises(self):
+        tmp = os.path.join(tempfile.mkdtemp(), "n2.db")
+        st = FaceStore(tmp)
+        try:
+            with self.assertRaises(FaceError):
+                st.set_note("查无此人", "x")
+            with self.assertRaises(FaceError):
+                st.get_note("查无此人")
+        finally:
+            st.close()
+
+    def test_forget_removes_note_with_person(self):
+        tmp = os.path.join(tempfile.mkdtemp(), "n3.db")
+        st = FaceStore(tmp)
+        try:
+            st.enroll("满仓", [np.ones(128, dtype=np.float32)])
+            st.set_note("满仓", "临时备注")
+            st.forget("满仓")
+            self.assertEqual(st.people(), [])
+            with self.assertRaises(FaceError):
+                st.get_note("满仓")
+        finally:
+            st.close()
+
+    def test_face_note_tool_is_registered_and_writes(self):
+        from forge.tools import TOOLS
+        self.assertIn("face_note", TOOLS)
+        self.assertFalse(TOOLS["face_note"]["read_only"], "写操作应标 read_only=False ✓")

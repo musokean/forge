@@ -116,3 +116,36 @@ if __name__ == "__main__":
     suite = unittest.defaultTestLoader.loadTestsFromModule(sys.modules[__name__])
     r = unittest.TextTestRunner(verbosity=2).run(suite)
     sys.exit(0 if r.wasSuccessful() else 1)
+
+
+class TestAmbientContext(unittest.TestCase):
+    """#18 现场身份注入：进 system 首条，且**经得住** refresh/reset ✓。"""
+
+    def test_ambient_lands_in_system_message(self):
+        a = _mk_agent()
+        a.set_ambient("在场 1 人：满仓（0.91）。")
+        s = a.messages[0]
+        self.assertEqual(s["role"], "system")
+        self.assertIn("满仓", s["content"])
+        self.assertIn("不是用户说的话", s["content"], "必须明确它是环境事实、不是用户发言 ✓")
+
+    def test_ambient_survives_refresh_and_reset(self):
+        a = _mk_agent()
+        a.set_ambient("在场 1 人：满仓（0.91）。")
+        a.refresh_system()                       # 技能开关会重建 system ✓ 别把身份弄丢 ✗
+        self.assertIn("满仓", a.messages[0]["content"])
+        a.reset()                                # 新开对话也不该丢 ✓
+        self.assertIn("满仓", a.messages[0]["content"])
+
+    def test_ambient_can_be_cleared(self):
+        a = _mk_agent()
+        a.set_ambient("在场 2 人：满仓、小李。")
+        a.set_ambient("")
+        self.assertNotIn("满仓", a.messages[0]["content"])
+        self.assertNotIn("现场（设备实时感知", a.messages[0]["content"])
+
+    def test_ambient_is_not_a_user_message(self):
+        a = _mk_agent()
+        a.set_ambient("在场 1 人：满仓。")
+        self.assertTrue(all(m["role"] == "system" for m in a.messages),
+                        "现场信息只能进 system，不能伪装成用户发言 ✗")

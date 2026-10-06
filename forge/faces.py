@@ -340,6 +340,20 @@ class FaceStore:
         self._conn.commit()
         return {"name": name, "added": len(vecs), "total": self.count_faces(name), "new_person": created}
 
+    def set_note(self, name: str, note: str) -> dict:
+        """给某人写一行备注（#18 按人记忆的最小版 ✓）。`face_forget` 会连人带备注一起删 ✓。"""
+        cur = self._conn.execute("UPDATE people SET notes = ? WHERE name = ?", (str(note or ""), str(name)))
+        if cur.rowcount == 0:
+            raise FaceError("没登记过这个人（备注无处可放）：%s" % name)
+        self._conn.commit()
+        return {"name": str(name), "note": str(note or "")}
+
+    def get_note(self, name: str) -> str:
+        row = self._conn.execute("SELECT notes FROM people WHERE name = ?", (str(name),)).fetchone()
+        if row is None:
+            raise FaceError("没登记过这个人：%s" % name)
+        return row["notes"] or ""
+
     def forget(self, name: str) -> dict:
         """删除某人（连同其全部向量）。库里没有原图，删了就真的没了。"""
         cur = self._conn.execute("SELECT id FROM people WHERE name = ?", ((name or "").strip(),))
@@ -355,10 +369,11 @@ class FaceStore:
 
     def people(self) -> List[dict]:
         rows = self._conn.execute(
-            "SELECT p.name, p.created, COUNT(f.id) AS faces FROM people p "
+            "SELECT p.name, p.created, p.notes, COUNT(f.id) AS faces FROM people p "
             "LEFT JOIN faces f ON f.person_id = p.id GROUP BY p.id ORDER BY p.name"
         ).fetchall()
-        return [{"name": r["name"], "created": r["created"], "faces": int(r["faces"])} for r in rows]
+        return [{"name": r["name"], "created": r["created"], "note": r["notes"] or "",
+                 "faces": int(r["faces"])} for r in rows]
 
     def count_faces(self, name: Optional[str] = None) -> int:
         if name is None:
@@ -539,7 +554,8 @@ def register_face_tools() -> bool:
             if not ppl:
                 return "人脸库是空的（还没登记过人）。"
             return "已登记 " + str(len(ppl)) + " 人：" + "；".join(
-                f"{p['name']}（{p['faces']} 张向量）" for p in ppl)
+                f"{p['name']}（{p['faces']} 张向量）" + (f"，备注：{p['note']}" if p.get("note") else "")
+                for p in ppl)
         finally:
             st.close()
 
@@ -627,6 +643,30 @@ def register_face_tools() -> bool:
         return (f"已登记 {res['name']}：新增 {res['added']} 张向量，共 {res['total']} 张"
                 + ("（新名字）" if res["new_person"] else "（追加到已有名字）") + how
                 + (f"；有 {misses} 帧没检测到人脸" if misses else ""))
+
+    @tool(
+        name="face_note",
+        description=(
+            "给**已登记**的人写一行备注（按人记忆的最小版）。例如「喜欢冰美式」「在带孩子」"
+            "「上次问过保养流程」。备注会随 face_forget 一起删除；传空串即清除。"
+            "读回来用 face_people（它会一起列出备注）。这是写操作。"
+        ),
+        parameters={"type": "object",
+                    "properties": {"name": {"type": "string", "description": "已登记的名字"},
+                                   "note": {"type": "string", "description": "备注内容；空串 = 清除"}},
+                    "required": ["name", "note"]},
+        read_only=False,
+    )
+    def face_note(name: str, note: str) -> str:
+        st = _store()
+        try:
+            st.set_note(name, note)
+            who = name
+            return ("已记住 " + who + " 的备注：" + note) if note else ("已清除 " + who + " 的备注。")
+        except FaceError:
+            return "人脸库里没有「" + str(name) + "」这个人 —— 先用 face_enroll 登记，再写备注。"
+        finally:
+            st.close()
 
     @tool(
         name="face_forget",
