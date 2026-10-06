@@ -26,6 +26,7 @@ import datetime
 import math
 import os
 import sqlite3
+import threading
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence, Tuple
 
@@ -274,6 +275,40 @@ class Match:
                 "runner_up": round(self.runner_up, 4), "unknown": self.unknown, "reason": self.reason}
 
 
+class _LockedConn:
+    """给 sqlite 连接套一把**可重入锁** ✓ —— 探针在后台线程读、工具在主线程写，必须串行化 ✓。
+
+    为什么不逐个方法加 `with self._lock:` ✗：库里 14 处直接 `self._conn.execute`，逐个改又慢又容易漏 ✓；
+    这里把连接包一层，所有调用（execute/executescript/commit/close ✓）自动加锁 ✓，一处改动全覆盖 ✓✓。
+    """
+
+    def __init__(self, conn, lock):
+        object.__setattr__(self, "_conn", conn)
+        object.__setattr__(self, "_lock", lock)
+
+    def __getattr__(self, name):
+        attr = getattr(object.__getattribute__(self, "_conn"), name)
+        if not callable(attr):
+            return attr
+        lock = object.__getattribute__(self, "_lock")
+
+        def guarded(*args, **kwargs):
+            with lock:
+                return attr(*args, **kwargs)
+
+        return guarded
+
+    def __setattr__(self, name, value):
+        with object.__getattribute__(self, "_lock"):
+            setattr(object.__getattribute__(self, "_conn"), name, value)
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *exc):
+        return False
+
+
 class FaceStore:
     """人脸身份库：`people` + `faces(向量 BLOB)`。
 
@@ -286,8 +321,14 @@ class FaceStore:
         parent = os.path.dirname(os.path.abspath(self.path))
         if parent:
             os.makedirs(parent, exist_ok=True)
-        self._conn = sqlite3.connect(self.path)
-        self._conn.row_factory = sqlite3.Row
+        # 连接用 check_same_thread=False + **一把锁** ✓✓：探针（#18 现场身份）在**后台线程**里读，
+        # 工具在主线程里写 —— sqlite 默认禁止跨线程 ✗，真语音轮里表现为
+        # 「ProgrammingError: SQLite objects created in a thread can only be used in that same thread」
+        # ✗✓（2026-10-06 真机踩到，且**隔离测试同线程调用测不出来** ✗ → 测试必须跨线程 ✓）。
+        _raw = sqlite3.connect(self.path, check_same_thread=False)
+        _raw.row_factory = sqlite3.Row
+        self._lock = threading.RLock()
+        self._conn = _LockedConn(_raw, self._lock)      # 所有 execute/commit 自动串行化 ✓（14 处全覆盖 ✓）
         self._init_schema()
 
     def _init_schema(self) -> None:

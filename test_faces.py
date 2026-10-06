@@ -440,3 +440,64 @@ class TestNotes(unittest.TestCase):
         from forge.tools import TOOLS
         self.assertIn("face_note", TOOLS)
         self.assertFalse(TOOLS["face_note"]["read_only"], "写操作应标 read_only=False ✓")
+
+class TestFaceStoreIsThreadSafe(unittest.TestCase):
+    """★ 库必须能被**另一个线程**使用 ✓✓。
+
+    2026-10-06 真机踩到 ✗：探针（现场身份）在后台线程里读库，而 sqlite 连接默认
+    `check_same_thread=True` → 真语音轮里识别**永远失败**，报
+    「SQLite objects created in a thread can only be used in that same thread」✗。
+    而当时的隔离测试是**同线程**调用 → 测不出来 ✗✓。这条测试**故意换一个线程** ✓。
+    """
+
+    def setUp(self):
+        if not HAS_NUMPY:
+            self.skipTest("需要 numpy")
+        self.tmp = tempfile.mkdtemp(prefix="faces-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)
+
+    def test_match_from_another_thread(self):
+        import threading
+        st = FaceStore(os.path.join(self.tmp, "faces.db"))
+        self.addCleanup(st.close)
+        vec = [0.05] * 128
+        st.enroll("满仓", [vec])
+        out = {}
+
+        def worker():
+            try:
+                m = st.match(vec)
+                out["name"] = m.name if m else None
+            except Exception as exc:                     # 就是这一句当初会炸 ✗
+                out["err"] = "%s: %s" % (type(exc).__name__, exc)
+
+        t = threading.Thread(target=worker)
+        t.start()
+        t.join(timeout=10)
+        self.assertNotIn("err", out, "跨线程读库必须可用 ✓（探针就在后台线程里读 ✗）")
+        self.assertEqual(out.get("name"), "满仓")
+
+    def test_concurrent_read_while_writing(self):
+        """一边读一边写也别炸 ✓（探针读 + 工具写是常态 ✓）。"""
+        import threading
+        st = FaceStore(os.path.join(self.tmp, "faces2.db"))
+        self.addCleanup(st.close)
+        st.enroll("满仓", [[0.05] * 128])
+        errs = []
+        stop = threading.Event()
+
+        def reader():
+            while not stop.is_set():
+                try:
+                    st.match([0.05] * 128)
+                except Exception as exc:
+                    errs.append("%s: %s" % (type(exc).__name__, exc))
+                    return
+
+        th = threading.Thread(target=reader)
+        th.start()
+        for i in range(30):
+            st.enroll("翠花", [[0.02] * 128], source="并发写入第%d次" % i)
+        stop.set()
+        th.join(timeout=10)
+        self.assertEqual(errs, [], "并发读写不该出错 ✓")
