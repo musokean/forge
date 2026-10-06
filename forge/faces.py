@@ -462,6 +462,11 @@ def face_defaults() -> dict:
             out["model"] = os.environ.get("FORGE_FACE_MODEL", "")
     except Exception:                                 # pragma: no cover - 配置坏了不该拖垮识别
         pass
+    # 路径统一展开 `~` ✓ —— 配置里写 `~/.forge/faces.db` 是**人类可读**的写法，
+# 但不展开的话 sqlite 会去建一个名字就叫 `~` 的目录 ✗（模型路径同理）。
+    for k in ("db", "model"):
+        if out.get(k):
+            out[k] = os.path.expanduser(str(out[k]))
     try:
         out["threshold"] = float(out["threshold"])
         out["margin"] = float(out["margin"])

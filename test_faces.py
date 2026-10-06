@@ -260,6 +260,19 @@ class TestMatch(unittest.TestCase):
         self.assertEqual(m.name, "solo")
         self.assertEqual(m.runner_up, 0.0, "库里只有一个人时，次佳应为 0（没有别人）")
 
+    def test_config_paths_expand_user_home(self):
+        """配置里的 `~` 必须展开 ✓ —— 不展开时 sqlite 会去建一个名字就叫 `~` 的目录 ✗。
+
+        用 mock 打配置，**不 reload 模块** ✗（reload 会污染全局状态 → 连坐别的用例 ✗）。
+        """
+        from unittest.mock import patch
+        with patch("forge.config.load_config",
+                   return_value={"face": {"db": "~/.forge/faces.db", "samples": 4}}):
+            d = face_defaults()
+        self.assertTrue(d["db"].startswith(os.path.expanduser("~")), d["db"])
+        self.assertNotIn("~", d["db"])
+        self.assertEqual(d["samples"], 4, "配置里的值要生效")
+
     def test_empty_store_is_unknown_with_reason(self):
         m = self.store.match(vec_of("x"))
         self.assertTrue(m.unknown)
