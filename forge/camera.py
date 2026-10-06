@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import os
+import threading
 import time
 from dataclasses import dataclass, field
 from typing import List, Optional, Sequence, Tuple
@@ -474,14 +475,29 @@ def capture(source: FrameSource, detector: Optional[FaceDetector] = None,
     return frame, faces
 
 
+# ══════════════════════════════════════════════════════════════════
+# 进程级摄像头锁 ✓✓
+
+_CAMERA_LOCK = threading.RLock()
+"""**同一时刻只允许一个调用方开摄像头** ✓。
+
+2026-10-06 真机踩到 ✗✓：语音轮的「现场身份」探针（后台线程，~1Hz）与工具 `face_who`（主线程，
+模型触发）同时开同一个摄像头 → **OpenCV 在原生层直接把整个进程干掉** ✗（rc=127，**没有任何
+traceback** ✗）。加锁后两边自动串行 ✓；探针侧还有「重试 + 跳过本次」兜底 ✓。
+（**注意**：长驻的 `OpenCvFrameSource` 不走这把锁 ✗ —— 它要一直占设备；产品里开长驻源的地方
+不会同时跑探针 ✓，但新代码要留意这一点 ✓。）
+"""
+
+
 def grab_frame(index: int = 0, detector: Optional[FaceDetector] = None, tries: int = 3):
     """开摄像头 → 取一帧 → 一定关掉。三个工具要的都是这一步，别各写一遍（开/关必须配对）。"""
-    src = OpenCvFrameSource(index=int(index))
-    try:
-        src.open()
-        return capture(src, _default_detector() if detector is None else detector, tries=tries)
-    finally:
-        src.close()
+    with _CAMERA_LOCK:                  # 与探针/其它工具串行 ✓（同时开会让 OpenCV 崩进程 ✗）
+        src = OpenCvFrameSource(index=int(index))
+        try:
+            src.open()
+            return capture(src, _default_detector() if detector is None else detector, tries=tries)
+        finally:
+            src.close()
 
 
 def probe_camera(index: int = 0) -> dict:
@@ -492,6 +508,11 @@ def probe_camera(index: int = 0) -> dict:
             "reason": "missing_deps",
             "detail": "没装 opencv/numpy：pip install \"handcraft-agent[vision]\"",
         }
+    with _CAMERA_LOCK:                  # 同上 ✓
+        return _probe_camera_locked(index)
+
+
+def _probe_camera_locked(index: int) -> dict:
     src = OpenCvFrameSource(index=index, warmup=1)
     try:
         src.open()

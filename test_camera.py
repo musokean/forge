@@ -309,3 +309,49 @@ class TestYuNetThresholdDefault(unittest.TestCase):
         sig = inspect.signature(YuNetFaceDetector.__init__)
         self.assertEqual(sig.parameters["score_threshold"].default, 0.7,
                          "默认阈值被改了？先看 YuNetFaceDetector 文档里的实测数据再改 ✗✓")
+
+@needs_vision
+class TestCameraLockSerialisesOpeners(unittest.TestCase):
+    """★ 同一时刻只能有一个调用方开摄像头 ✓✓。
+
+    2026-10-06 真机踩到 ✗：语音轮的「现场身份」探针（后台线程 ~1Hz）与工具 `face_who`（主线程）
+    同时开同一个摄像头 → **OpenCV 在原生层把整个进程干掉**（rc=127，**没有任何 traceback** ✗）。
+    这条测试不需要真摄像头 ✓：把 open/close 换成会**记录并发数**的假实现 ✓，并发调 `grab_frame` ✓，
+    断言**峰值并发数 == 1** ✓（撤掉锁，它就会变成 >1 → 真能抓到 ✓）。
+    """
+
+    def test_two_threads_never_open_at_the_same_time(self):
+        import threading
+        import time
+
+        import forge.camera as C
+
+        state = {"now": 0, "peak": 0}
+        guard = threading.Lock()
+        orig = (C.OpenCvFrameSource.open, C.OpenCvFrameSource.close, C.capture)
+
+        def fake_open(self):
+            with guard:
+                state["now"] += 1
+                state["peak"] = max(state["peak"], state["now"])
+            time.sleep(0.05)                     # 模拟原生 open 的耗时 → 没锁就会重叠 ✓
+
+        def fake_close(self):
+            with guard:
+                state["now"] -= 1
+
+        def fake_capture(*a, **k):
+            return ("FRAME", [])
+
+        C.OpenCvFrameSource.open, C.OpenCvFrameSource.close, C.capture = fake_open, fake_close, fake_capture
+        try:
+            ths = [threading.Thread(target=C.grab_frame) for _ in range(4)]
+            for t in ths:
+                t.start()
+            for t in ths:
+                t.join(timeout=10)
+        finally:
+            C.OpenCvFrameSource.open, C.OpenCvFrameSource.close, C.capture = orig
+
+        self.assertEqual(state["peak"], 1, "同一时刻只能有一个开摄像头 ✓（否则 OpenCV 会崩掉整个进程 ✗✓）")
+        self.assertEqual(state["now"], 0, "开/关必须配对 ✓")
