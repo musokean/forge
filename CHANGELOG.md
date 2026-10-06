@@ -7,30 +7,50 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Fixed
+_Nothing yet._
 
-- **Two face-pipeline bugs found by testing on the real camera.** The detector ran a global histogram
-  equalisation over every frame; on a backlit face (the room here has a bright window behind the desk)
-  that turned one detectable face into zero, where the raw frame detected it and CLAHE detected it - the
-  face sat at 64 against 145 for the window behind it. Preprocessing is now CLAHE by default, selectable,
-  and the measurements are in the code comment. Separately, matching ranked stored *samples* rather than
-  *people*, so anyone enrolled with more than one sample always had their own second sample as the
-  runner-up and could never clear the margin test. A live session scored 2/10 before the fix and 10/10
-  after, with same-person similarity at 0.90-0.95 against a non-face floor of -0.07-0.29.
-
-### Fixed
-
-- **The mouth-motion signal does not separate speech from silence, and the default implied it did.**
-  Measured on this machine, same person, 15 s of each: talking gives a median mouth-motion score of
-  0.0199 and sitting quietly 0.0159, maxima 0.0224 and 0.0223. The distributions overlap, so no
-  threshold separates them - raising it to 0.025 would drop the talking case as well. What dominates
-  the frame difference is the detector box jittering one to three pixels per frame rather than the
-  mouth moving. The default is now 0.03, above the measured noise band, so the feature claims a
-  clearly moving mouth and not speech; the tool description and docs say exactly that, and a
-  regression test pins the measured overlap so the stronger claim cannot creep back in. Deciding who
-  is speaking needs the audio VAD to say when someone is speaking, with vision only answering who.
+## [0.5.1] - 2026-10-06
 
 ### Added
+
+- **Camera and face detection (#18 Phase 1)** — two tools, `look` and `look_image`: the agent can take
+  one frame from a webcam and learn whether anyone is in front of it, and where the faces are. `look`
+  returns only numbers and never writes to disk; saving an annotated image is a separate tool marked as
+  a write operation. A fake frame source and a stub detector keep the pipeline testable with no camera
+  at all (including in CI), and neither tool is registered when opencv/numpy are missing — the same
+  "do not pretend" rule the client executor follows. Ships as the `vision` extra, which caps opencv
+  below 5 because OpenCV 5 removed the Haar cascades.
+
+- **Face recognition (#18 Phase 2)** — the agent can now *recognise* people it has been introduced to, not
+  just see that someone is there. `face_enroll` stores feature vectors under a name, `face_who` answers
+  "who is this", `face_people` lists the roster and `face_forget` deletes someone completely. The identity
+  store keeps **only vectors, never images** (`data/faces.db`, already gitignored), matching is nearest
+  neighbour with both a cosine threshold and a best-versus-runner-up margin, and anything below either bar
+  comes back as *unknown* rather than a guess. The embedding model (SFace, which ships in opencv itself —
+  only the .onnx file is extra) is a swappable part: a stub embedder keeps the whole decision path testable
+  in CI with no model and no camera.
+
+- **Presence: who is here and who is speaking (#18 Phase 3)** — with several people in front of the
+  camera the agent now keeps a stable identity per person as they move, and answers who is talking.
+  A single microphone carries no direction information and the Haar detector returns no landmarks, so
+  this does not attempt source localisation or lip reading: it combines two signals that are actually
+  available, the frame-to-frame motion of the mouth region of each face and how large that face is,
+  and it says "not sure" when the leader is weak or only marginally ahead. Recognition is cached per
+  track and re-checked every N frames, so names do not flicker when one frame happens to miss.
+
+- **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
+  preferred when its model is present, falling back to Haar, and the choice is a `face.detector`
+  setting. Measured live here: on a backlit face Haar found the face in 1 of 12 frames and YuNet in
+  12 of 12 at 0.93-0.94 confidence. It also returns five landmarks, so faces can be aligned before
+  embedding. `make_detector()` reports the ladder honestly and `available()` says which one is in use.
+  The default score threshold is 0.9: at 0.5 a frame containing no face at all still produced a
+  0.50 shoulder detection, which is exactly what the higher threshold prevents.
+
+  On alignment, measured rather than assumed: comparing alignCrop against a tight crop on ten live
+  frames of one person gives 0.892 against 0.862 median similarity (+0.030), but a plain crop with a
+  25% margin scores 0.894 - so alignment buys nothing over the default path and is not a precision
+  fix. All three arms recognised 10/10, far above the 0.36 threshold. The real gain from YuNet is
+  detection robustness in poor light, not recognition accuracy.
 
 - **Audio-gated "who is speaking", and audio is never vetoed by vision (#18).** The visual mouth-motion score cannot separate speech from
   silence (the two distributions overlap - see Fixed below), so the question is now split between two
@@ -49,44 +69,27 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   instead of failing the call. Known limit, documented: if the speaker is off camera while someone else
   is in frame, the single-person rule attributes it incorrectly.
 
-- **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
-  preferred when its model is present, falling back to Haar, and the choice is a `face.detector`
-  setting. Measured live here: on a backlit face Haar found the face in 1 of 12 frames and YuNet in
-  12 of 12 at 0.93-0.94 confidence. It also returns five landmarks, so faces can be aligned before
-  embedding. `make_detector()` reports the ladder honestly and `available()` says which one is in use.
-  The default score threshold is 0.9: at 0.5 a frame containing no face at all still produced a
-  0.50 shoulder detection, which is exactly what the higher threshold prevents.
+### Fixed
 
-  On alignment, measured rather than assumed: comparing alignCrop against a tight crop on ten live
-  frames of one person gives 0.892 against 0.862 median similarity (+0.030), but a plain crop with a
-  25% margin scores 0.894 - so alignment buys nothing over the default path and is not a precision
-  fix. All three arms recognised 10/10, far above the 0.36 threshold. The real gain from YuNet is
-  detection robustness in poor light, not recognition accuracy.
+- **Two face-pipeline bugs found by testing on the real camera.** The detector ran a global histogram
+  equalisation over every frame; on a backlit face (the room here has a bright window behind the desk)
+  that turned one detectable face into zero, where the raw frame detected it and CLAHE detected it - the
+  face sat at 64 against 145 for the window behind it. Preprocessing is now CLAHE by default, selectable,
+  and the measurements are in the code comment. Separately, matching ranked stored *samples* rather than
+  *people*, so anyone enrolled with more than one sample always had their own second sample as the
+  runner-up and could never clear the margin test. A live session scored 2/10 before the fix and 10/10
+  after, with same-person similarity at 0.90-0.95 against a non-face floor of -0.07-0.29.
 
-- **Presence: who is here and who is speaking (#18 Phase 3)** — with several people in front of the
-  camera the agent now keeps a stable identity per person as they move, and answers who is talking.
-  A single microphone carries no direction information and the Haar detector returns no landmarks, so
-  this does not attempt source localisation or lip reading: it combines two signals that are actually
-  available, the frame-to-frame motion of the mouth region of each face and how large that face is,
-  and it says "not sure" when the leader is weak or only marginally ahead. Recognition is cached per
-  track and re-checked every N frames, so names do not flicker when one frame happens to miss.
+- **The mouth-motion signal does not separate speech from silence, and the default implied it did.**
+  Measured on this machine, same person, 15 s of each: talking gives a median mouth-motion score of
+  0.0199 and sitting quietly 0.0159, maxima 0.0224 and 0.0223. The distributions overlap, so no
+  threshold separates them - raising it to 0.025 would drop the talking case as well. What dominates
+  the frame difference is the detector box jittering one to three pixels per frame rather than the
+  mouth moving. The default is now 0.03, above the measured noise band, so the feature claims a
+  clearly moving mouth and not speech; the tool description and docs say exactly that, and a
+  regression test pins the measured overlap so the stronger claim cannot creep back in. Deciding who
+  is speaking needs the audio VAD to say when someone is speaking, with vision only answering who.
 
-- **Face recognition (#18 Phase 2)** — the agent can now *recognise* people it has been introduced to, not
-  just see that someone is there. `face_enroll` stores feature vectors under a name, `face_who` answers
-  "who is this", `face_people` lists the roster and `face_forget` deletes someone completely. The identity
-  store keeps **only vectors, never images** (`data/faces.db`, already gitignored), matching is nearest
-  neighbour with both a cosine threshold and a best-versus-runner-up margin, and anything below either bar
-  comes back as *unknown* rather than a guess. The embedding model (SFace, which ships in opencv itself —
-  only the .onnx file is extra) is a swappable part: a stub embedder keeps the whole decision path testable
-  in CI with no model and no camera.
-
-- **Camera and face detection (#18 Phase 1)** — two tools, `look` and `look_image`: the agent can take
-  one frame from a webcam and learn whether anyone is in front of it, and where the faces are. `look`
-  returns only numbers and never writes to disk; saving an annotated image is a separate tool marked as
-  a write operation. A fake frame source and a stub detector keep the pipeline testable with no camera
-  at all (including in CI), and neither tool is registered when opencv/numpy are missing — the same
-  "do not pretend" rule the client executor follows. Ships as the `vision` extra, which caps opencv
-  below 5 because OpenCV 5 removed the Haar cascades.
 
 ## [0.5.0] - 2026-10-03
 
@@ -331,8 +334,8 @@ First public release.
 - **Config-driven**: switch models/roles via `config/models.yaml`, no code changes
 - Zero hard dependencies beyond `openai` + `httpx`
 
-[Unreleased]: https://github.com/musokean/forge/compare/v0.5.0...HEAD
-[Unreleased]: https://github.com/musokean/forge/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/musokean/forge/compare/v0.5.1...HEAD
+[0.5.1]: https://github.com/musokean/forge/compare/v0.5.0...v0.5.1
 [0.5.0]: https://github.com/musokean/forge/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/musokean/forge/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/musokean/forge/compare/v0.3.0...v0.4.0
