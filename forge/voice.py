@@ -827,6 +827,88 @@ class MicListener:
         return self.barge_in
 
 
+class LiveSpeechGate:
+    """「此刻有人在说话吗」—— 给视觉层当**门控**用（视觉只回答「是谁」✓）。
+
+    为什么必须有它：视觉那条嘴部运动分**分不开「说话」与「安静」** ✗✓（实测两个分布重叠，
+    说话中位 0.0199 / 安静中位 0.0159，见 `docs/faces.md`）。音频这一侧就可靠得多 ——
+    能量 VAD 在安静时给 0、有人说话时给 1 ✓。于是：
+
+        「谁在说话」 = VAD 说**此刻有人在说话** ✓  ×  画面里**谁动嘴最明显** ✓
+
+    两个模态各出自己可靠的那一半 ✓，而不是逼视觉去干它干不了的活 ✗。
+
+    **阈值复用 `EnergyVAD` 的**（同一个来源 ✓，不另立一套 ✗）。后台线程持续读麦克风，
+    维护滚动窗口：最近 `window_ms` 内有 ≥ `min_speech_ms` 的块超过阈值 → 判定「有人在说话」✓。
+    """
+
+    def __init__(self, source: "AudioSource", vad: Optional[EnergyVAD] = None,
+                 window_ms: int = 1200, min_speech_ms: int = 300):
+        self.source = source
+        self.vad = vad or EnergyVAD()
+        self.threshold = self.vad.threshold          # **同一来源** ✓
+        self.window_ms = max(1, int(window_ms))
+        self.min_speech_ms = max(1, int(min_speech_ms))
+        self._blocks: list = []                      # [(累计时刻ms, 是否超阈值)]
+        self._t = 0
+        self._thread: Optional[threading.Thread] = None
+        self._stop = threading.Event()
+
+    def feed(self, block) -> bool:
+        """喂一块音频（测试里直接调，无需线程 ✓）。"""
+        loud = ev_rms_high(block, self.threshold)
+        self._t += self.source.block_ms
+        self._blocks.append((self._t, loud))
+        cutoff = self._t - self.window_ms
+        while self._blocks and self._blocks[0][0] < cutoff:
+            self._blocks.pop(0)
+        return loud
+
+    def speaking(self) -> bool:
+        """此刻有人在说话吗（滚动窗口内超阈值的总时长是否够）。"""
+        loud_ms = sum(self.source.block_ms for _t, loud in self._blocks if loud)
+        return loud_ms >= self.min_speech_ms
+
+    def __call__(self) -> bool:
+        return self.speaking()
+
+    def start(self) -> "LiveSpeechGate":
+        self.source.open()
+        self._thread = threading.Thread(target=self._loop, name="speech-gate", daemon=True)
+        self._thread.start()
+        return self
+
+    def _loop(self) -> None:                        # pragma: no cover - 需要真麦克风
+        while not self._stop.is_set():
+            block = self.source.read(self.source.block_frames)
+            if block is None:
+                time.sleep(0.02)
+                continue
+            self.feed(block)
+
+    def close(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=1.0)
+        try:
+            self.source.close()
+        except Exception:
+            pass
+
+
+def open_live_speech_gate(source: "AudioSource" = None, **kw) -> Optional["LiveSpeechGate"]:
+    """建一个「此刻有人在说话」的门控并起后台线程。
+
+    **拿不到麦克风就返回 None**（调用方退回纯视觉模式 ✓，而不是假装有音频 ✗）。
+    """
+    try:
+        gate = LiveSpeechGate(source if source is not None else SoundDeviceSource(), **kw)
+        gate.start()
+        return gate
+    except Exception:                                # 无麦克风/无 sounddevice 等
+        return None
+
+
 def ev_rms_high(block, threshold: float) -> bool:
     import numpy as np
 

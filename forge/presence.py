@@ -238,8 +238,15 @@ class PresenceMonitor:
 
     def __init__(self, recognizer: Optional[Callable] = None, recognize_every: int = 10,
                  min_motion: float = DEFAULT_MIN_MOTION, ratio: float = DEFAULT_RATIO,
-                 ttl: float = DEFAULT_TTL, mouth_size: Tuple[int, int] = (32, 16)):
+                 ttl: float = DEFAULT_TTL, mouth_size: Tuple[int, int] = (32, 16),
+                 audio: Optional[Callable] = None):
+        """`audio`：可调用的「**此刻有人在说话吗**」门控（如 `voice.LiveSpeechGate` ✓，None = 纯视觉 ✓）。
+
+        **为什么要它**：视觉的嘴动分**分不开说话与安静**（实测分布重叠 ✗）→ 音频负责「有没有人在说」✓，
+        视觉只负责「是谁」✓。音频说「没人说话」时，本模块**直接回没人说话** ✓（不再拿噪声当说话 ✓）。
+        """
         _require_numpy()
+        self.audio = audio
         self.recognizer = recognizer
         self.recognize_every = max(1, int(recognize_every))
         self.min_motion = float(min_motion)
@@ -276,24 +283,42 @@ class PresenceMonitor:
         return tracks
 
     def snapshot(self, tracks: Optional[Sequence[Track]] = None) -> dict:
-        """给「谁在场、谁在说话」的结论 —— 拿不定就说拿不定 ✓。"""
+        """给「谁在场、谁在说话」的结论 —— 拿不定就说拿不定 ✓。
+
+        **有音频门控时**（`self.audio`）：音频说「没人说话」→ 直接回没人说话 ✓（最可靠的一半 ✓）；
+        音频说「有人在说」→ 再用视觉挑动嘴最明显的那个给名字 ✓。
+        **没音频时**：退回纯视觉 —— 这时**只说「谁动嘴最明显」，不说「在说话」** ✗✓。
+        """
         tracks = list(tracks if tracks is not None else self.tracker.active())
+        audio: Optional[bool] = None
+        if self.audio is not None:
+            try:
+                audio = bool(self.audio())
+            except Exception:                        # 门控坏了别把整件事弄挂 ✓
+                audio = None
+        mode = "audio_gated" if audio is not None else "motion_only"
+        base = {"people": [t.as_dict() for t in tracks], "mode": mode, "audio": audio}
         if not tracks:
-            return {"people": [], "speaking": None, "reason": "画面里没有人"}
+            return {**base, "speaking": None, "reason": "画面里没有人"}
+        if audio is False:
+            return {**base, "speaking": None,
+                    "reason": "音频判定：此刻没人在说话（视觉嘴动分不作数 ✓）"}
         ranked = sorted(tracks, key=lambda t: t.mouth, reverse=True)
         best = ranked[0]
         second = ranked[1].mouth if len(ranked) > 1 else 0.0
         who = best.name or f"未登记#{best.track_id}"
+        lead = "（音频判定有人在说话 ✓，视觉定位到动嘴最明显的人）" if audio else ""
         if best.mouth < self.min_motion:
-            return {"people": [t.as_dict() for t in tracks], "speaking": None,
+            return {**base, "speaking": None,
                     "reason": f"分数最高的 {who} 只有 {best.mouth:.4f}，低于阈值 {self.min_motion}"
-                              f"（没人在明显动嘴）"}
+                              f"（没人在明显动嘴{lead}）"}
         if len(ranked) > 1 and best.mouth < second * self.ratio:
-            return {"people": [t.as_dict() for t in tracks], "speaking": None,
+            return {**base, "speaking": None,
                     "reason": f"{who} 与另一个人的嘴动分太接近"
-                              f"（{best.mouth:.4f} vs {second:.4f}），分不清谁在说"}
-        return {"people": [t.as_dict() for t in tracks], "speaking": who,
-                "score": round(best.mouth, 4), "reason": "嘴部运动最明显且明显领先"}
+                              f"（{best.mouth:.4f} vs {second:.4f}），分不清谁在说{lead}"}
+        return {**base, "speaking": who, "score": round(best.mouth, 4),
+                "reason": "音频判定有人在说话 + 嘴部运动最明显且明显领先" if audio
+                          else "嘴部运动最明显且明显领先"}
 
 
 def format_presence(snap: dict, seconds: float = 0.0) -> str:
@@ -303,9 +328,13 @@ def format_presence(snap: dict, seconds: float = 0.0) -> str:
         return f"（观察 {seconds:.1f}s）画面里没有人。"
     names = "、".join(p["name"] for p in ppl)
     head = f"（观察 {seconds:.1f}s）在场 {len(ppl)} 人：{names}。"
+    if snap.get("audio") is False:
+        return head + "此刻没人在说话（音频判定 ✓）。"
     sp = snap.get("speaking")
     if sp:
-        return head + f"正在说话：{sp}（嘴部运动 {snap.get('score', 0):.4f}）。"
+        if snap.get("audio"):
+            return head + f"正在说话：{sp}（音频判定有人在说话 + 视觉定位，嘴部运动 {snap.get('score', 0):.4f}）。"
+        return head + f"嘴动最明显的是 {sp}（未接音频，**不能确认在说话** ✗；嘴部运动 {snap.get('score', 0):.4f}）。"
     return head + f"谁在说话：不确定 —— {snap.get('reason', '')}。"
 
 
@@ -326,7 +355,7 @@ def register_presence_tools() -> bool:
     @tool(
         name="who_is_speaking",
         description=(
-            "盯着摄像头看几秒，回答「现在有几个人、是谁、谁在**明显动嘴**」。"
+            "盯着摄像头看几秒，回答「现在有几个人、是谁、谁在说话」。"
             "⚠️ **它不能判定「在说话」** ✗：本工具靠嘴部区域的帧间运动判断，而真机实测证明"
             "说话（中位 0.0199）与安静（中位 0.0159）两个分布重叠、没有门限能分开 "
             "（检测框每帧抖 1~3 像素就盖过嘴动贡献）。所以它只回答「谁动嘴更明显」✓，"
@@ -339,10 +368,11 @@ def register_presence_tools() -> bool:
         read_only=True,
     )
     def who_is_speaking(seconds: float = 3.0, index: int = 0) -> str:
-        from .camera import HaarFaceDetector, OpenCvFrameSource
+        from .camera import OpenCvFrameSource, make_detector
         from .faces import FaceStore, crop_face, face_defaults, make_embedder
+        from .voice import open_live_speech_gate
         dur = max(0.5, min(30.0, float(seconds)))
-        det = HaarFaceDetector()
+        det = make_detector()                        # 有 YuNet 就用 YuNet ✓
         store, emb = None, None
         try:
             store = FaceStore(face_defaults()["db"])
@@ -356,7 +386,10 @@ def register_presence_tools() -> bool:
             m = store.match(emb.embed(crop_face(image, box)))
             return (m.name, m.score) if not m.unknown else ("", m.score)
 
-        mon = PresenceMonitor(recognizer=recognize if store else None, recognize_every=5)
+        # 音频门控：有麦克风就用它判「此刻有没有人在说话」✓（声音负责这一半最可靠 ✓）；
+        # 拿不到麦克风 → None → 退回纯视觉，**那时只报「谁动嘴最明显」，不声称在说话** ✗✓
+        gate = open_live_speech_gate()
+        mon = PresenceMonitor(recognizer=recognize if store else None, recognize_every=5, audio=gate)
         src = OpenCvFrameSource(index=int(index))
         t0 = time.time()
         try:
@@ -366,8 +399,11 @@ def register_presence_tools() -> bool:
                 if frame is None:
                     continue
                 mon.observe(frame, det.detect(frame.image))
+            snap = mon.snapshot()
         finally:
             src.close()
-        return format_presence(mon.snapshot(), seconds=time.time() - t0)
+            if gate is not None:
+                gate.close()
+        return format_presence(snap, seconds=time.time() - t0)
 
     return True

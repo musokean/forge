@@ -272,6 +272,71 @@ def _wait_for(pred, timeout=3.0, interval=0.01):
 
 
 @needs_numpy
+class TestLiveSpeechGate(unittest.TestCase):
+    """音频门控：有声 → 「有人在说话」；静音 → 「没人在说话」✓（纯状态机，无需真麦克风 ✓）。"""
+
+    def test_gate_follows_loud_then_quiet(self):
+        """**要测的是门控的窗口逻辑**，所以用自己可控的假麦克风 ✓
+        （`ScriptedSource` 的脚本按时间轴走，不适合精确控制「第几块有声」✓）。"""
+        import numpy as np
+        from forge.voice import LiveSpeechGate
+
+        class FakeMic:
+            block_ms = 200
+            block_frames = 3200
+
+            def __init__(self, louds):
+                self._louds, self._i = list(louds), 0
+
+            def open(self):
+                pass
+
+            def close(self):
+                pass
+
+            def read(self, frames):
+                loud = self._louds[self._i] if self._i < len(self._louds) else False
+                self._i += 1
+                return np.full(frames, 0.3 if loud else 0.0, dtype="float32")
+
+        gate = LiveSpeechGate(FakeMic([True, True, True]), window_ms=1200, min_speech_ms=300)
+        try:
+            for _ in range(3):                                # 0.6s 有声（3 × 200ms 块）
+                gate.feed(gate.source.read(gate.source.block_frames))
+            self.assertTrue(gate.speaking(), "有声块之后应当判定「有人在说话」")
+            self.assertTrue(bool(gate()), "门控要能当可调用对象用（presence 就那样用 ✓）")
+            for _ in range(8):                                # 静音灌满窗口（1.6s > 1.2s）
+                gate.feed(gate.source.read(gate.source.block_frames))
+            self.assertFalse(gate.speaking(), "静音灌满窗口后应当判定「没人在说话」")
+        finally:
+            gate.close()
+
+    def test_gate_reuses_the_vad_threshold(self):
+        """阈值必须**复用 EnergyVAD 的**，不另立一套 ✗✓（否则两个模块的门限会各漂各的）。"""
+        from forge.voice import EnergyVAD, LiveSpeechGate, ScriptedSource
+        gate = LiveSpeechGate(ScriptedSource([]))
+        self.assertEqual(gate.threshold, EnergyVAD().threshold)
+
+    def test_open_gate_returns_none_without_a_working_source(self):
+        """拿不到麦克风要**如实返回 None** ✓（调用方退回纯视觉），而不是假装有音频 ✗。"""
+        from forge.voice import open_live_speech_gate
+
+        class Broken:
+            block_ms = 200
+            block_frames = 3200
+
+            def open(self):
+                raise RuntimeError("no mic")
+
+            def read(self, frames):
+                return None
+
+            def close(self):
+                pass
+
+        self.assertIsNone(open_live_speech_gate(Broken()))
+
+
 class TestEnergyVAD(unittest.TestCase):
     """VAD 是纯状态机：喂合成的块就能验边界，不需要真声音。"""
 

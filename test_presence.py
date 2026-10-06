@@ -237,6 +237,60 @@ class TestPresenceMonitor(unittest.TestCase):
         self.assertIn("分不清", snap["reason"])
 
     @needs_numpy
+    def test_audio_gate_says_nobody_is_speaking(self):
+        """**本轮的核心修复** ✓✓：音频说「没人说话」→ 即使画面噪声给出了分数，也必须回「没人说话」。
+
+        （实测：安静时嘴动分 0.0159~0.0223，与说话时重叠 ✗ —— 所以视觉那一半根本不该单独下结论 ✓。）
+        """
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001, audio=lambda: False)
+        img = _img()
+        mon.observe(img, [_face()], now=0.0)
+        mon.observe(_talk_frame(img), [_face()], now=0.1)      # 视觉上「在动嘴」
+        snap = mon.snapshot()
+        self.assertIsNone(snap["speaking"], "音频说没人说话时不得判定有人在说话 ✗")
+        self.assertIn("音频判定", snap["reason"])
+        self.assertEqual(snap["mode"], "audio_gated")
+        self.assertIn("没人在说话", format_presence(snap, 3.0))
+
+    @needs_numpy
+    def test_audio_gate_uses_vision_only_for_who(self):
+        """音频说「有人在说话」→ 视觉只负责「是谁」✓。"""
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001, audio=lambda: True)
+        img = _img()
+        mon.observe(img, [_face()], now=0.0)
+        mon.observe(_talk_frame(img), [_face()], now=0.1)
+        snap = mon.snapshot()
+        self.assertEqual(snap["speaking"], "未登记#1")
+        self.assertEqual(snap["mode"], "audio_gated")
+        self.assertIs(snap["audio"], True)
+        self.assertIn("音频判定有人在说话", format_presence(snap, 3.0))
+
+    @needs_numpy
+    def test_a_broken_gate_falls_back_instead_of_crashing(self):
+        """门控自己抛异常 → 退回纯视觉，不能把整个查询弄挂 ✓。"""
+        def boom():
+            raise RuntimeError("mic died")
+
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001, audio=boom)
+        mon.observe(_img(), [_face()], now=0.0)
+        snap = mon.snapshot()
+        self.assertEqual(snap["mode"], "motion_only")
+        self.assertIsNone(snap["audio"])
+
+    @needs_numpy
+    def test_without_audio_it_never_claims_speech(self):
+        """没音频时**不许说「正在说话」** ✗✓ —— 只能说「嘴动最明显」。这是诚实性守卫。"""
+        mon = PresenceMonitor(recognizer=None, min_motion=0.001)       # 无 audio
+        img = _img()
+        mon.observe(img, [_face()], now=0.0)
+        mon.observe(_talk_frame(img), [_face()], now=0.1)
+        snap = mon.snapshot()
+        self.assertEqual(snap["mode"], "motion_only")
+        text = format_presence(snap, 3.0)
+        self.assertIn("不能确认在说话", text)
+        self.assertNotIn("正在说话", text, "没有音频就不许声称「在说话」 ✗")
+
+    @needs_numpy
     def test_default_does_not_fire_on_the_measured_noise_floor(self):
         """**把真机实测结论钉成回归测试** ✓✓。
 
@@ -266,10 +320,22 @@ class TestPresenceMonitor(unittest.TestCase):
 
     @needs_numpy
     def test_format_text_branches(self):
+        """四种措辞都要对，而且**措辞必须和证据强度匹配** ✓✓（这是诚实性的一部分）。"""
         self.assertIn("没有人", format_presence({"people": [], "speaking": None, "reason": "画面里没有人"}, 1.0))
-        with_speaker = {"people": [{"name": "老王"}], "speaking": "老王", "score": 0.05, "reason": ""}
-        self.assertIn("正在说话：老王", format_presence(with_speaker, 3.0))
-        unknown = {"people": [{"name": "老王"}], "speaking": None, "reason": "没人在明显动嘴"}
+        # 有音频门控 + 判定有人说话 → 可以说「正在说话」✓
+        gated = {"people": [{"name": "老王"}], "speaking": "老王", "score": 0.05, "audio": True, "reason": ""}
+        self.assertIn("正在说话：老王", format_presence(gated, 3.0))
+        # 没有音频 → **只说「嘴动最明显」，不许说「正在说话」** ✗✓
+        motion = {"people": [{"name": "老王"}], "speaking": "老王", "score": 0.05, "audio": None, "reason": ""}
+        text = format_presence(motion, 3.0)
+        self.assertIn("嘴动最明显", text)
+        self.assertNotIn("正在说话", text, "没音频还声称「在说话」就是过度宣称 ✗")
+        # 音频说没人说话 → 直接回没人说话 ✓
+        quiet = {"people": [{"name": "老王"}], "speaking": None, "audio": False,
+                 "reason": "音频判定：此刻没人在说话"}
+        self.assertIn("此刻没人在说话", format_presence(quiet, 3.0))
+        # 拿不准 → 不确定 ✓
+        unknown = {"people": [{"name": "老王"}], "speaking": None, "audio": True, "reason": "没人在明显动嘴"}
         self.assertIn("不确定", format_presence(unknown, 3.0))
 
 

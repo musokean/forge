@@ -32,6 +32,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Audio-gated "who is speaking" (#18).** The visual mouth-motion score cannot separate speech from
+  silence (the two distributions overlap - see Fixed below), so the question is now split between two
+  modalities that each answer the half they are actually good at. `voice.LiveSpeechGate` reads the
+  microphone on a background thread and reuses `EnergyVAD`'s threshold rather than inventing a second
+  one, rolling over a 1.2 s window; it answers whether anyone is speaking right now. The vision layer
+  then only has to answer who. When the gate says nobody is speaking, `who_is_speaking` returns exactly
+  that no matter what the mouth-motion noise is doing; when it says someone is speaking, vision names
+  the person whose mouth moves most. Without a microphone the tool falls back to motion only and says
+  so in its wording rather than claiming speech, and a broken gate degrades instead of failing the
+  call.
+
 - **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
   preferred when its model is present, falling back to Haar, and the choice is a `face.detector`
   setting. Measured live here: on a backlit face Haar found the face in 1 of 12 frames and YuNet in
