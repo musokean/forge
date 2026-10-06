@@ -375,6 +375,340 @@ def format_ambient(snap: dict, seconds: float = 0.0) -> str:
     return "在场 %d 人：%s。" % (len(ppl), "、".join(parts))
 
 
+
+class AvSpeaker:
+    """用「音频包络 × 每人嘴动」的**互相关**判断**谁在说话** ✓✓（两人场景的关键缺口 ✓）。
+
+    为什么需要：视觉嘴动分**分不开说话与安静** ✗（实测分布重叠），音频门控只给「有没有人说」✓
+    —— 两个都答不了「**哪一个**人在说」✗。但**同步性**可以：说话的人嘴在动、同时有声音 ✓；
+    没说话的人嘴动要么无关、要么不同步 ✗。所以对每个 track 算它与音频包络的**皮尔逊相关** ✓，
+    最高的那位就是说话人 ✓。
+
+    **纯 Python、不依赖 numpy** ✓（能在无 numpy 的环境里被测试 ✓）；数据靠**时间戳**对齐 ✓
+    （音频零阶保持采样到每个嘴动样本的时刻 ✓）。
+
+    **判不准就说不准** ✓✓（与项目一贯做法一致 ✓）：样本太少 → 说不清 ✓；没人跟声音同步 → 说不清 ✓；
+    两个人相关都高且接近 → **说不清** ✓（这正是「两个人同时在说」的情形 ✓）。
+
+    ⚠️ **采样率前提** ✗✓：嘴动分必须来自**足够快的连续帧**（≥5~10 Hz ✓）。探针默认 ~1 Hz 只能当"谁在场" ✓，
+    做互相关需要「有人说话时连开摄像头」的突发采样 ✓（约 10 Hz ✓）—— 否则 1 秒粒度的"嘴动"是模糊量 ✗。
+    """
+
+    def __init__(self, window_s: float = 2.5, min_samples: int = 6, max_lag_s: float = 0.3,
+                 min_corr: float = 0.35, margin: float = 0.15, max_audio_age_s: float = 0.35):
+        self.window_s = float(window_s)
+        self.min_samples = max(3, int(min_samples))
+        self.min_corr = float(min_corr)
+        self.margin = float(margin)
+        self.max_audio_age_s = float(max_audio_age_s)
+        self.max_lag_s = float(max_lag_s)                      # 「嘴唇领先声音」的搜索范围 ✓
+        self._audio = []                      # [(t, rms)] ✓
+        self._mouth = {}                      # track_id -> [(t, score)] ✓
+
+    def on_audio(self, t: float, rms: float) -> None:
+        """喂一个音频块的**能量包络** ✓（不是布尔 ✓ —— 布尔做不了相关 ✗）。"""
+        self._audio.append((float(t), float(rms)))
+        self._prune(float(t))
+
+    def on_mouth(self, track_id, t: float, score: float) -> None:
+        """喂某个 track 的**这一帧**嘴动分 ✓。"""
+        self._mouth.setdefault(track_id, []).append((float(t), float(score)))
+        self._prune(float(t))
+
+    def _prune(self, now: float) -> None:
+        cutoff = now - self.window_s
+        self._audio = [(t, v) for t, v in self._audio if t >= cutoff]
+        for tid in list(self._mouth):
+            keep = [(t, v) for t, v in self._mouth[tid] if t >= cutoff]
+            if keep:
+                self._mouth[tid] = keep
+            else:
+                del self._mouth[tid]
+
+    def _audio_at(self, t: float) -> Optional[float]:
+        """嘴动样本时刻的音频包络 ✓（零阶保持；太久没有音频就当 0 ✓）。"""
+        best = None
+        for at, v in self._audio:
+            if at <= t + 1e-9:
+                best = (at, v)
+            else:
+                break
+        if best is None:
+            return None
+        if t - best[0] > self.max_audio_age_s:
+            return None
+        return best[1]
+
+    @staticmethod
+    def _pearson(xs: List[float], ys: List[float]) -> float:
+        """皮尔逊相关 ✓（任一侧方差为 0 → 0.0 ✓，不做除零 ✗）。"""
+        n = len(xs)
+        if n < 2:
+            return 0.0
+        mx = sum(xs) / n
+        my = sum(ys) / n
+        sxy = sum((x - mx) * (y - my) for x, y in zip(xs, ys))
+        sxx = sum((x - mx) ** 2 for x in xs)
+        syy = sum((y - my) ** 2 for y in ys)
+        if sxx <= 1e-12 or syy <= 1e-12:
+            return 0.0
+        return float(sxy / (sxx ** 0.5 * syy ** 0.5))
+
+    def pairs(self, track_id, lag_s: float = 0.0) -> List[Tuple[float, float, float]]:
+        """该 track 的 **(时刻, 嘴动分, 音频包络)** ✓ —— 音频按 `lag_s` 平移 ✓，只留有音频的样本 ✓。
+
+        `lag_s > 0` 表示「音频取更早的」= 允许**嘴唇领先声音** ✓✓（这是真实的 ✓：实测说话时唇动
+        比声音早 100~200ms 量级 ✓）→ 所以调用方要在若干 lag 上取最大相关 ✓，而不是只看 lag=0 ✗。
+        """
+        out = []
+        for t, score in self._mouth.get(track_id, []):
+            a = self._audio_at(t - lag_s)
+            if a is not None:
+                out.append((t, score, a))
+        return out
+
+    def rank(self, max_lag_s: Optional[float] = None) -> List[dict]:
+        """每人结果（按**最佳延迟**上的相关降序 ✓）；样本不足的也算出来但会标出来 ✓。
+
+        `max_lag_s`：在 ±这个范围内搜最佳延迟 ✓（默认 0.3s ✓ —— 覆盖「嘴唇领先声音」✓）。
+        """
+        rows = []
+        for tid in self._mouth:
+            best_r, best_lag, best_n = -2.0, 0.0, 0
+            for lag in self._lags(max_lag_s):
+                pr = self.pairs(tid, lag_s=lag)
+                if len(pr) < 2:
+                    continue
+                r = self._pearson([a for _t, _s, a in pr], [s for _t, s, _a in pr])
+                if r > best_r:
+                    best_r, best_lag, best_n = r, lag, len(pr)
+            if best_n == 0:                      # 一个可用样本都没有 ✓
+                pr = self.pairs(tid)
+                best_r, best_n = 0.0, len(pr)
+            rows.append({"track_id": tid, "n": best_n, "corr": max(0.0, best_r), "lag": best_lag})
+        rows.sort(key=lambda r: (-r["corr"], r["n"]))
+        return rows
+
+    def _lags(self, max_lag_s: Optional[float]) -> List[float]:
+        """待搜的延迟列表 ✓（步长取采样间隔的量级 ✓）。"""
+        m = self.max_lag_s if max_lag_s is None else float(max_lag_s)
+        if m <= 0:
+            return [0.0]
+        steps = 9
+        return [round(-m + 2 * m * i / (steps - 1), 4) for i in range(steps)]
+
+    def decide(self) -> dict:
+        """谁在说话 ✓ —— **判不准就返回 None + 原因** ✓✓。"""
+        rows = self.rank()
+        if not rows:
+            return {"track_id": None, "corr": 0.0, "margin": 0.0, "reason": "没有画面里的人"}
+        enough = [r for r in rows if r["n"] >= self.min_samples]
+        if not enough:
+            return {"track_id": None, "corr": rows[0]["corr"], "margin": 0.0,
+                    "reason": "样本不足（需要 %d 个同步样本，现在最多 %d）" % (self.min_samples, rows[0]["n"])}
+        best = enough[0]
+        if best["corr"] < self.min_corr:
+            return {"track_id": None, "corr": best["corr"], "margin": 0.0,
+                    "reason": "没人跟声音明显同步（最高相关系数 %.2f < %.2f）" % (best["corr"], self.min_corr)}
+        second = enough[1]["corr"] if len(enough) > 1 else -1.0
+        gap = best["corr"] - second
+        if len(enough) > 1 and gap < self.margin:
+            return {"track_id": None, "corr": best["corr"], "margin": gap,
+                    "reason": "两个人都在动、相关也接近（%.2f vs %.2f）→ 分不出" % (best["corr"], second)}
+        return {"track_id": best["track_id"], "corr": best["corr"],
+                "margin": gap if len(enough) > 1 else 1.0, "lag": best.get("lag", 0.0),
+                "reason": "与声音同步（r=%.2f，延迟 %.2fs）" % (best["corr"], best.get("lag", 0.0))}
+
+
+
+class SpeechBurst:
+    """「**有人说话时才连开摄像头**」的突发采样 ✓✓ —— 给「音频 × 嘴动」互相关喂数据。
+
+    **为什么必须这样** ✗✓：探针默认 ~1Hz ✓，而 `grab_frame` 每帧开关摄像头 ≈1fps ✗ → 这样的
+    「嘴动」是 1 秒粒度的模糊量 ✗，根本做不了互相关 ✗。所以：声音一起来 → **连开**摄像头跑 ~10fps ✓
+    （一次几秒 ✓），声音停了再关 ✓。
+
+    **隐私** ✓：摄像头**只在检测到人声时开** ✓✓（比一直开着克制得多 ✓）；仍不开图、不存图 ✓。
+
+    **可测试** ✓✓：时钟、音频门控、帧源、检测器**全部可注入** ✓ → `step()` 能被测试**完全驱动** ✓
+    （不需要麦克风、不需要摄像头、不需要真人 ✓✓ —— 与项目既有做法一致 ✓）。
+    """
+
+    def __init__(self, monitor, gate, av: Optional["AvSpeaker"] = None, source=None, detector=None,
+                 *, fps: float = 10.0, stop_silence_s: float = 0.6, max_burst_s: float = 20.0,
+                 min_loud_ms: int = 200, clock=None, paused=None):
+        self.monitor = monitor
+        self.gate = gate
+        self.av = av if av is not None else AvSpeaker()
+        self.source = source
+        self.detector = detector
+        self.fps = max(1.0, float(fps))
+        self.stop_silence_s = float(stop_silence_s)
+        self.max_burst_s = float(max_burst_s)
+        self.min_loud_ms = int(min_loud_ms)
+        self.clock = clock or time.monotonic
+        # `paused`：**它自己在说话时**要暂停突发采样 ✓✓ —— 半双工只闭了主循环的麦 ✗，
+        #   突发采样用的是**独立**的音频流 ✓ → 不暂停就会把 forge 自己的声音当成"有人在说" ✗✓
+        #   （于是采样期间嘴动与声音根本不同步 → 判定必错 ✗）。接线时传 `PlaybackHandle.playing` ✓。
+        self.paused = paused
+        self._bursting = False
+        self._t0 = 0.0
+        self._quiet_since: Optional[float] = None
+        self._last_frame_t = -1.0
+        self._last_audio_mono = 0.0
+        self.bursts = 0
+        self.frames = 0
+        self.last_error = ""                 # 取帧失败**只报一次** ✗✓（别静默 ✗）
+        self.last_result: Optional[dict] = None   # 最近一轮「谁在说」的判定 ✓（喂对话用 ✓）
+        self._hold = None
+
+    # ── 相机开关（带着锁 ✓：与工具串行，别抢崩 ✓）────────────────
+    def _open(self) -> None:
+        if self.source is None:              # 自建相机：**要独占** ✓（工具会等，而不是崩 ✗✓）
+            from .camera import OpenCvFrameSource, hold_camera
+            self._hold = hold_camera()
+            self._hold.__enter__()
+            self.source = OpenCvFrameSource(index=0)
+        self.source.open()                   # 注入进来的源也要 open ✓（测试就靠这条 ✓）
+        if self.detector is None:
+            from .camera import make_detector
+            self.detector = make_detector()
+
+    def _close(self) -> None:
+        if self.source is not None:
+            try:
+                self.source.close()
+            except Exception:
+                pass
+            self.source = None
+        if self._hold is not None:
+            try:
+                self._hold.__exit__(None, None, None)
+            except Exception:
+                pass
+            self._hold = None
+
+    @property
+    def bursting(self) -> bool:
+        return self._bursting
+
+    def step(self) -> Optional[dict]:
+        """推进一次：`None` = 继续；返回 dict = 这一轮突发结束，里面是**谁在说**的判定 ✓。"""
+        now = self.clock()
+        if self._is_paused():
+            if self._bursting:                   # 它开始说话了 → 立刻收尾并放掉相机 ✓
+                self._close()
+                self._bursting = False
+            return None
+        for mono, rms in self._new_audio():
+            self.av.on_audio(mono, rms)
+        try:
+            speaking = bool(self.gate.speaking())
+        except Exception:
+            speaking = False
+        if not self._bursting:
+            if speaking and self.gate.loud_ms() >= self.min_loud_ms:
+                self._open()
+                self._bursting = True
+                self._t0 = now
+                self._quiet_since = None
+                self._last_frame_t = -1.0
+                self.bursts += 1
+            return None
+        if now - self._last_frame_t >= 1.0 / self.fps:
+            self._last_frame_t = now
+            self._read_one(now)
+        if speaking:
+            self._quiet_since = None
+        elif self._quiet_since is None:
+            self._quiet_since = now
+        over = self._quiet_since is not None and (now - self._quiet_since) >= self.stop_silence_s
+        if over or (now - self._t0) >= self.max_burst_s:
+            self._close()
+            self._bursting = False
+            out = self.av.decide()
+            names = {}
+            try:
+                for tr in self.monitor.tracker.active():
+                    names[tr.track_id] = getattr(tr, "name", "") or ""
+            except Exception:
+                pass
+            out["names"] = names
+            out["frames"] = self.frames
+            self.last_result = out               # ← 记住，给注入用 ✓
+            return out
+        return None
+
+    def _is_paused(self) -> bool:
+        """它在说话吗（是就别采样 ✓）。钩子坏了当作"没在说" ✓，别把整件事弄挂 ✓。"""
+        if self.paused is None:
+            return False
+        try:
+            return bool(self.paused())
+        except Exception:
+            return False
+
+    def _new_audio(self) -> list:
+        """只取**还没喂过**的音频样本 ✓（避免同一条样本反复进相关 ✓）。"""
+        try:
+            series = self.gate.energy_series(since_mono=self._last_audio_mono)
+        except Exception:
+            return []
+        fresh = [(m, r) for m, r in series if m > self._last_audio_mono]
+        if fresh:
+            self._last_audio_mono = max(m for m, _r in fresh)
+        return fresh
+
+    def _read_one(self, now: float) -> None:
+        frame = None
+        try:
+            frame = self.source.read()
+        except Exception as exc:                 # 取帧失败**要说话** ✗✓（今天栽过 ✗）
+            if not self.last_error:
+                self.last_error = "%s: %s" % (type(exc).__name__, exc)
+                print("[现场身份] 突发采样取帧失败（只报一次）：%s" % self.last_error)
+            return
+        if frame is None:
+            return
+        image = getattr(frame, "image", frame)
+        try:
+            faces = self.detector.detect(image)
+            tracks = self.monitor.observe(frame, faces, now=now)
+        except Exception as exc:
+            if not self.last_error:
+                self.last_error = "%s: %s" % (type(exc).__name__, exc)
+                print("[现场身份] 突发采样处理失败（只报一次）：%s" % self.last_error)
+            return
+        self.frames += 1
+        for tr in tracks:
+            self.av.on_mouth(tr.track_id, now, float(getattr(tr, "mouth", 0.0) or 0.0))
+
+    # ── 线程（真机用 ✓；测试直接调 step() ✓）─────────────────────
+    def start(self) -> "SpeechBurst":
+        self._stop = threading.Event()
+        self._thread = threading.Thread(target=self._loop, name="speech-burst", daemon=True)
+        self._thread.start()
+        return self
+
+    def _loop(self) -> None:                     # pragma: no cover - 需要真麦克风
+        while not getattr(self, "_stop", threading.Event()).is_set():
+            try:
+                self.step()
+            except Exception:
+                pass
+            time.sleep(1.0 / self.fps)
+
+    def close(self) -> None:
+        try:
+            if getattr(self, "_stop", None) is not None:
+                self._stop.set()
+            if getattr(self, "_thread", None) is not None:
+                self._thread.join(timeout=1.0)
+        except Exception:
+            pass
+        self._close()
+
+
 class PresenceProbe:
     """后台按 ~1Hz 看一眼「画面里有谁、刚才谁在说话」，产出**一行可注入对话的现场描述** ✓。
 
@@ -387,7 +721,8 @@ class PresenceProbe:
     """
 
     def __init__(self, interval_s: float = 1.0, index: int = 0, audio=None,
-                 store=None, embedder=None, detector=None, ttl_s: float = 2.5, look_s: float = 1.0):
+                 store=None, embedder=None, detector=None, ttl_s: float = 2.5, look_s: float = 1.0,
+                 av_result=None):
         _require_numpy()
         self.interval_s = max(0.2, float(interval_s))
         self.index = int(index)
@@ -402,6 +737,7 @@ class PresenceProbe:
         self._detector = detector
         self._store = store
         self._embedder = embedder
+        self._av_result = av_result      # 取「谁在说」的 AV 判定（可选 ✓）：多人时比嘴动更可靠 ✓
         # 跟踪器 TTL 必须**大于轮询间隔** ✓，否则每次轮询都被当成新目标（1Hz 下 ttl<1s 就废 ✗）
         self._mon = PresenceMonitor(recognizer=None, recognize_every=1,
                                     ttl=max(ttl_s, self.interval_s * 2.5), audio=audio)
@@ -529,12 +865,37 @@ class PresenceProbe:
         snap = self._mon.snapshot()
         base = format_ambient(snap)
         ppl = snap.get("people") or []
+        av = self._av_line()
+        if av:
+            return base + av
         if len(ppl) == 1:
             nm = ppl[0].get("name") or "画面里那位（未登记）"
             return base + "刚才说话的是 %s（画面里只有一人 ✓）。" % nm
         if len(ppl) > 1:
             return base + "刚才有人说话，但画面里有 %d 人、嘴动分分不出是谁 ✗。" % len(ppl)
         return base + "刚才说话的人不在画面里。"
+
+    def _av_line(self) -> str:
+        """把「音频 × 嘴动」的判定翻成一句注入用的话 ✓✓ —— **判不准就直说** ✗✓。
+
+        比「嘴动最明显」（1Hz 探针只能给这个 ✗）可靠得多：它比的是**与声音的同步** ✓，
+        两人场景下这是唯一能指认的依据 ✓；两人同时在说 → 这里会明确回「分不出」✓✓。
+        """
+        get = getattr(self, "_av_result", None)      # 半构造对象（测试用 __new__）也不能炸 ✓
+        if get is None:
+            return ""
+        try:
+            r = get() or {}
+        except Exception:
+            return ""
+        if not r:
+            return ""
+        tid = r.get("track_id")
+        names = r.get("names") or {}
+        if tid is None:
+            return "刚才有人说话，但%s。" % (r.get("reason") or "分不出是谁")
+        nm = names.get(tid) or ("未登记#%s" % tid)
+        return "刚才说话的是 %s（与声音同步 r=%.2f）。" % (nm, float(r.get("corr") or 0.0))
 
     @property
     def ambient(self) -> str:

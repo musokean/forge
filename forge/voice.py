@@ -855,19 +855,31 @@ class LiveSpeechGate:
         self._stop = threading.Event()
 
     def feed(self, block) -> bool:
-        """喂一块音频（测试里直接调，无需线程 ✓）。"""
-        loud = ev_rms_high(block, self.threshold)
+        """喂一块音频（测试里直接调，无需线程 ✓）。
+
+        **同时记下能量与单调时钟** ✓✓（2026-10-06 #18-A）：布尔量做不了「谁在说」的互相关 ✗，
+        要拿**包络**跟每个人的嘴动比同步 ✓ → 所以这里多存两列：`rms` 与 `mono`（`time.monotonic` ✓，
+        与视觉帧**同一时钟** ✓，否则两条曲线对不齐 ✗✓）。
+        """
+        rms = ev_rms(block)
+        loud = rms >= self.threshold
         self._t += self.source.block_ms
-        self._blocks.append((self._t, loud))
+        self._blocks.append((self._t, loud, rms, time.monotonic()))
         cutoff = self._t - self.window_ms
         while self._blocks and self._blocks[0][0] < cutoff:
             self._blocks.pop(0)
         return loud
 
+    def energy_series(self, since_mono: Optional[float] = None) -> list:
+        """`[(mono, rms)]` ✓ —— 给「音频 × 嘴动」互相关用（单调时钟 ✓，与视觉同源 ✓）。"""
+        return [(b[3], b[2]) for b in self._blocks if since_mono is None or b[3] >= since_mono]
+
+    def loud_ms(self) -> int:
+        return sum(self.source.block_ms for _t, loud, _r, _m in self._blocks if loud)
+
     def speaking(self) -> bool:
         """此刻有人在说话吗（滚动窗口内超阈值的总时长是否够）。"""
-        loud_ms = sum(self.source.block_ms for _t, loud in self._blocks if loud)
-        return loud_ms >= self.min_speech_ms
+        return self.loud_ms() >= self.min_speech_ms
 
     def __call__(self) -> bool:
         return self.speaking()
@@ -907,6 +919,14 @@ def open_live_speech_gate(source: "AudioSource" = None, **kw) -> Optional["LiveS
         return gate
     except Exception:                                # 无麦克风/无 sounddevice 等
         return None
+
+
+def ev_rms(block) -> float:
+    """一块音频的 RMS ✓（与 `EnergyVAD` 同一算法 ✓ —— 阈值才可比 ✓）。"""
+    import numpy as np
+
+    arr = np.asarray(block, dtype=np.float32).reshape(-1)
+    return float(np.sqrt(np.mean(arr ** 2))) if arr.size else 0.0
 
 
 def ev_rms_high(block, threshold: float) -> bool:

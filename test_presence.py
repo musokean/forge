@@ -527,3 +527,317 @@ class TestProbeUsesSameRecipeAsEnrolment(unittest.TestCase):
         self.assertEqual((nm1, sc1), ("", 0.0))
         self.assertEqual(nm2, "")
         self.assertIn("模型加载失败（模拟）", probe.first_error, "失败原因必须被记下来 ✓")
+
+class TestAvSpeaker(unittest.TestCase):
+    """★ 用「音频包络 × 每人嘴动」的互相关判断**谁在说话** ✓✓（两人场景的关键缺口 ✓）。
+
+    不需要摄像头、不需要 numpy、不需要真人 ✓ —— 全用**合成时序**，因为这里要验的是**判据**：
+      · 与声音同步的人胜出 ✓（并允许**嘴唇领先声音** ✓：真实约 100~200ms ✓）
+      · 没人同步 → **说不清** ✓
+      · **两个人都在同步**（= 同时在说）→ **说不清** ✓✓（这条就是 margin 的意义 ✓）
+      · 样本太少 → 说不清 ✓
+    另附**反证**：把 margin 去掉 → 同时在说的场景会**乱指一个** ✗ → 说明 margin 真在起作用 ✓。
+    """
+
+    def _series(self, av, seed=1):
+        """造一段：音频包络 `env` 的序列 + 两个 track 的嘴动 ✓。"""
+        import random
+        rng = random.Random(seed)
+        n = len(av)
+        for i, a in enumerate(av):
+            av_ts = i * 0.1
+            av_val = a
+        return n
+
+    def _feed(self, av, mouth_a, mouth_b, dt=0.1, lead=0.15):
+        """audio 与 mouth 分开喂 ✓；mouth_a 与**早 lead 秒的音频**同步（= 嘴唇领先 ✓）。"""
+        from forge.presence import AvSpeaker
+        sp = AvSpeaker(window_s=5.0, min_samples=6, min_corr=0.35, margin=0.15)
+        for i, a in enumerate(av):
+            sp.on_audio(i * dt, a)
+        for i in range(len(av)):
+            ti = i * dt
+            # 采样时若嘴唇领先 lead，则「t 时刻的嘴」对应「t-lead 时刻的声音」 →
+            # 在 pairs(lag) 里表现为 best_lag = +lead ✓
+            sp.on_mouth(1, ti, mouth_a[i])
+            sp.on_mouth(2, ti, mouth_b[i])
+        return sp
+
+    def test_speaker_wins_with_lip_lead(self):
+        """A 的嘴动跟着声音（领先 0.15s ✓），B 是无关动作 → 应判 A ✓✓，且最佳延迟 ≈ +0.15 ✓。"""
+        import math
+        env = [0.5 + 0.5 * math.sin(i / 2.0) for i in range(50)]          # 有起伏的包络 ✓
+        mouth_a = [0.5 + 0.5 * math.sin((i - 1.5) / 2.0) for i in range(50)]   # 领先 1.5 步 = 0.15s ✓
+        mouth_b = [0.5 + 0.5 * math.cos(i / 3.7) for i in range(50)]      # 无关动作 ✓
+        sp = self._feed(env, mouth_a, mouth_b)
+        d = sp.decide()
+        self.assertEqual(d["track_id"], 1, "应判为 A（他的嘴动与声音同步 ✓）：%s" % d)
+        self.assertGreater(d["corr"], 0.8, "相关系数应很高 ✓：%s" % d)
+        self.assertAlmostEqual(d["lag"], 0.15, delta=0.06, msg="最佳延迟应≈+0.15s（嘴唇领先 ✓）：%s" % d)
+
+    def test_no_sync_admits_it(self):
+        """两个人都在乱动 → **说不清** ✓（不许硬指 ✗）。"""
+        import math
+        env = [0.5 + 0.5 * math.sin(i / 2.0) for i in range(50)]
+        mouth_a = [0.5 + 0.5 * math.cos(i / 4.3) for i in range(50)]
+        mouth_b = [0.5 + 0.5 * math.sin(i / 5.9) for i in range(50)]
+        sp = self._feed(env, mouth_a, mouth_b)
+        d = sp.decide()
+        self.assertIsNone(d["track_id"], "没人同步就该说不清 ✓：%s" % d)
+        self.assertIn("同步", d["reason"])
+
+    def test_two_speakers_at_once_is_ambiguous(self):
+        """**两个人同时在说**（两边的嘴动都跟着声音）→ 必须**说不清** ✓✓，不能挑一个 ✗。"""
+        import math
+        env = [0.5 + 0.5 * math.sin(i / 2.0) for i in range(50)]
+        mouth_a = [0.5 + 0.5 * math.sin((i - 1.5) / 2.0) for i in range(50)]
+        mouth_b = [0.5 + 0.5 * math.sin((i - 1.5) / 2.0) + 0.01 * math.sin(i) for i in range(50)]
+        sp = self._feed(env, mouth_a, mouth_b)
+        d = sp.decide()
+        self.assertIsNone(d["track_id"], "同时在说就是分不出，不许硬指 ✗：%s" % d)
+
+    def test_margin_is_what_refuses(self):
+        """★ **反证** ✓：把 margin 拆掉 → 上面那个「同时在说」的场景就会**乱指一个** ✗。
+
+        这条测试保证 `margin` 不是摆设 ✓（去掉它，上面的用例就会失败 ✓）。
+        """
+        import math
+        from forge.presence import AvSpeaker
+        env = [0.5 + 0.5 * math.sin(i / 2.0) for i in range(50)]
+        mouth_a = [0.5 + 0.5 * math.sin((i - 1.5) / 2.0) for i in range(50)]
+        mouth_b = [0.5 + 0.5 * math.sin((i - 1.5) / 2.0) + 0.01 * math.sin(i) for i in range(50)]
+        no_margin = AvSpeaker(window_s=5.0, min_samples=6, min_corr=0.35, margin=-1.0)
+        for i, a in enumerate(env):
+            no_margin.on_audio(i * 0.1, a)
+        for i in range(len(env)):
+            no_margin.on_mouth(1, i * 0.1, mouth_a[i])
+            no_margin.on_mouth(2, i * 0.1, mouth_b[i])
+        self.assertIsNotNone(no_margin.decide()["track_id"],
+                             "去掉 margin 后它会乱指一个 ✗ —— 这正是 margin 要拦住的 ✓")
+
+    def test_too_few_samples_is_honest(self):
+        from forge.presence import AvSpeaker
+        sp = AvSpeaker(window_s=5.0, min_samples=6)
+        sp.on_audio(0.0, 0.3)
+        sp.on_audio(0.1, 0.5)
+        sp.on_mouth(1, 0.0, 0.4)
+        d = sp.decide()
+        self.assertIsNone(d["track_id"])
+        self.assertIn("样本不足", d["reason"])
+
+    def test_window_prunes_old_samples(self):
+        """窗口外的旧样本必须被丢 ✓（否则会拿几分钟前的动作来相关 ✗）。"""
+        from forge.presence import AvSpeaker
+        sp = AvSpeaker(window_s=1.0, min_samples=3)
+        for i in range(40):
+            sp.on_audio(i * 0.1, 0.5 + 0.5 * (i % 2))
+            sp.on_mouth(1, i * 0.1, 0.5 + 0.5 * (i % 2))
+        self.assertLessEqual(len(sp.pairs(1)), 12, "1.0s 窗口 @0.1s → 最多 ~11 个样本 ✓")
+        self.assertGreaterEqual(len(sp.pairs(1)), 6)
+
+class TestSpeechBurst(unittest.TestCase):
+    """★ 突发采样：**有人说话才开摄像头** ✓✓（不需要麦克风/摄像头/真人 ✓）。
+
+    验四件事：① 没人说话时**相机根本不开** ✓（隐私 ✓）；② 说话时连开、按 fps 采帧、把音频包络与
+    每人嘴动喂进互相关 ✓；③ 静音 `stop_silence_s` 后**关相机并给出判定** ✓；④ 相机**确实被释放** ✓。
+    """
+
+    class FakeGate:
+        def __init__(self, clock):
+            self.clock = clock
+            self.loud = True
+            self.series = []
+        def speaking(self):
+            return self.loud
+        def loud_ms(self):
+            return 400 if self.loud else 0
+        def energy_series(self, since_mono=None):
+            return [(m, r) for m, r in self.series if since_mono is None or m > since_mono]
+
+    class FakeSource:
+        def __init__(self):
+            self.opened = 0
+            self.closed = 0
+        def open(self):
+            self.opened += 1
+        def close(self):
+            self.closed += 1
+        def read(self):
+            return "FRAME"
+
+    class FakeDetector:
+        def detect(self, image):
+            return ["FACE"]
+
+    class FakeTrack:
+        def __init__(self, tid, mouth, name=""):
+            self.track_id = tid
+            self.mouth = mouth
+            self.name = name
+            self.box = None
+
+    class FakeMonitor:
+        """按**预设波形**返回两个 track 的嘴动分 ✓（1 号与音频同相 ✓，2 号反相 ✓）。"""
+        def __init__(self, clock, gate):
+            self.clock = clock
+            self.gate = gate
+            self.calls = 0
+            class T:
+                def active(self_inner):
+                    return []
+            self.tracker = T()
+        def observe(self, frame, faces, now=None):
+            self.calls += 1
+            import math
+            a = 0.5 + 0.5 * math.sin(self.calls / 2.0)          # 与音频同形 ✓
+            b = 0.5 + 0.5 * math.cos(self.calls / 3.7)          # 无关 ✓
+            return [TestSpeechBurst.FakeTrack(1, a, "满仓"), TestSpeechBurst.FakeTrack(2, b, "翠花")]
+
+    def _rig(self):
+        import math
+        now = {"t": 1000.0}
+        clock = lambda: now["t"]
+        from forge.presence import SpeechBurst
+        gate = TestSpeechBurst.FakeGate(clock)
+        src = TestSpeechBurst.FakeSource()
+        mon = TestSpeechBurst.FakeMonitor(clock, gate)
+        burst = SpeechBurst(mon, gate, source=src, detector=TestSpeechBurst.FakeDetector(), fps=10.0,
+                            stop_silence_s=0.6, max_burst_s=5.0, clock=clock)
+        return burst, gate, src, mon, now
+
+    def test_camera_stays_shut_when_nobody_speaks(self):
+        """① 没人说话 → **相机一次都不开** ✓✓（这就是隐私保证 ✓）。"""
+        burst, gate, src, mon, now = self._rig()
+        gate.loud = False
+        for _ in range(50):
+            now["t"] += 0.1
+            self.assertIsNone(burst.step())
+        self.assertEqual(src.opened, 0, "没人说话时绝不能开相机 ✗")
+        self.assertEqual(burst.bursts, 0)
+        self.assertFalse(burst.bursting)
+
+    def test_burst_opens_reads_decides_and_releases(self):
+        """②③④ 说话 → 连开采样 → 静音后**关相机 + 判定出与声音同步的那位** ✓✓。"""
+        import math
+        burst, gate, src, mon, now = self._rig()
+        gate.loud = True
+        # 说话期间：音频包络与「1 号的嘴动」同相（外加 0.15s 嘴唇领先 ✓）
+        for i in range(30):
+            t = 1000.0 + i * 0.1
+            gate.series.append((t, 0.5 + 0.5 * math.sin(i / 2.0)))
+            now["t"] = t
+            burst.step()
+        self.assertTrue(burst.bursting, "有人说话时应当处于突发状态 ✓")
+        self.assertEqual(src.opened, 1, "连开一次 ✓（不是每帧开关 ✗）")
+        got = mon.calls
+        self.assertGreaterEqual(got, 5, "应当连续采到若干帧 ✓（fps 限速 ✓）：%d" % got)
+        # 静音 → 停
+        gate.loud = False
+        out = None
+        for _ in range(20):
+            now["t"] += 0.1
+            out = burst.step()
+            if out is not None:
+                break
+        self.assertIsNotNone(out, "静音 0.6s 后应当结束并返回判定 ✓")
+        self.assertEqual(out["track_id"], 1, "应判为与声音同步的 1 号 ✓：%s" % out)
+        self.assertGreater(out["corr"], 0.5)
+        self.assertEqual(src.closed, 1, "结束后**必须关掉相机** ✓✓")
+        self.assertFalse(burst.bursting)
+
+    def test_long_burst_is_capped(self):
+        """一直有声音也不能永远占着相机 ✓（max_burst_s 封顶 ✓）。"""
+        burst, gate, src, mon, now = self._rig()
+        gate.loud = True
+        out = None
+        for _ in range(80):                      # 8 秒 > max_burst_s=5 ✓
+            now["t"] += 0.1
+            out = burst.step()
+            if out is not None:
+                break
+        self.assertIsNotNone(out, "超过 max_burst_s 必须收尾 ✓")
+        self.assertEqual(src.closed, 1, "封顶后也要关相机 ✓")
+
+    def test_read_failure_is_reported_not_swallowed(self):
+        """取帧失败**要说话** ✓（今天栽过：静默吞掉 ⇒ 现场数据空而无从得知 ✗✓）。"""
+        burst, gate, src, mon, now = self._rig()
+        def boom():
+            raise RuntimeError("模拟取帧失败")
+        src.read = boom
+        gate.loud = True
+        now["t"] += 0.1
+        burst.step()                      # 第一步只负责"起突发" ✓
+        now["t"] += 0.1
+        burst.step()                      # 第二步才会读帧 ✓
+        self.assertIn("模拟取帧失败", burst.last_error, "失败原因必须被记下 ✓")
+
+class TestAmbientCarriesAvVerdict(unittest.TestCase):
+    """AV 判定要进**注入给模型的那句话** ✓✓；判不准时照样说「分不出」✓。"""
+
+    def _probe(self, av):
+        from forge.presence import PresenceProbe
+        pr = PresenceProbe.__new__(PresenceProbe)          # 不起线程、不开相机 ✓
+        pr._mon = type("M", (), {"snapshot": lambda self=None: {"people": []}})()
+        pr._av_result = av
+        return pr
+
+    def test_names_the_speaker_when_av_is_confident(self):
+        pr = self._probe(lambda: {"track_id": 2, "corr": 0.81, "names": {2: "翠花"}, "reason": "与声音同步"})
+        line = pr._av_line()
+        self.assertIn("翠花", line)
+        self.assertIn("0.81", line)
+
+    def test_admits_when_av_cannot_tell(self):
+        pr = self._probe(lambda: {"track_id": None, "corr": 0.4,
+                                  "reason": "两个人都在动、相关也接近（0.72 vs 0.70）→ 分不出"})
+        line = pr._av_line()
+        self.assertIn("分不出", line)
+        self.assertNotIn("满仓", line)
+
+    def test_no_av_means_no_claim(self):
+        self.assertEqual(self._probe(None)._av_line(), "")
+        self.assertEqual(self._probe(lambda: {})._av_line(), "")
+        self.assertEqual(self._probe(lambda: (_ for _ in ()).throw(RuntimeError("坏")))._av_line(), "")
+
+class TestSpeechBurstPausesWhileAgentTalks(unittest.TestCase):
+    """★ 它自己在说话时必须**暂停**突发采样 ✓✓。
+
+    否则：半双工只闭了**主循环**的麦 ✗，突发采样用的是**独立**音频流 ✓ → 会把 forge 自己的声音
+    当成「有人在说」✗ → 采到的嘴动与声音不同步 → 判定必错 ✗✓（甚至把它自己判成说话人 ✗）。
+    """
+
+    def test_paused_hook_stops_and_releases(self):
+        now = {"t": 500.0}
+        clock = lambda: now["t"]
+        from forge.presence import SpeechBurst
+
+        class G:
+            loud = False
+            def speaking(self):
+                return False
+            def loud_ms(self):
+                return 0
+            def energy_series(self, since_mono=None):
+                return []
+
+        pause = {"v": False}
+        src = type("S", (), {"opened": 0, "closed": 0,
+                             "open": lambda self: setattr(self, "opened", self.opened + 1),
+                             "close": lambda self: setattr(self, "closed", self.closed + 1),
+                             "read": lambda self: "F"})()
+
+        class M:
+            class T:
+                def active(self):
+                    return []
+            tracker = T()
+            def observe(self, frame, faces, now=None):
+                return []
+
+        b = SpeechBurst(M(), G(), source=src, detector=None, clock=clock, paused=lambda: pause["v"])
+        b._open()                      # 模拟"已经在采样"✓
+        b._bursting = True
+        pause["v"] = True              # 它开始说话了 ✓
+        self.assertIsNone(b.step())
+        self.assertFalse(b.bursting, "说话时必须停下 ✓")
+        self.assertEqual(src.closed, 1, "并且**立刻放掉相机** ✓✓")

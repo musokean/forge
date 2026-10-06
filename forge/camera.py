@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import base64
 import os
+import contextlib
 import threading
 import time
 from dataclasses import dataclass, field
@@ -506,6 +507,18 @@ traceback** ✗）。加锁后两边自动串行 ✓；探针侧还有「重试 
 （**注意**：长驻的 `OpenCvFrameSource` 不走这把锁 ✗ —— 它要一直占设备；产品里开长驻源的地方
 不会同时跑探针 ✓，但新代码要留意这一点 ✓。）
 """
+
+
+@contextlib.contextmanager
+def hold_camera():
+    """独占摄像头一段时间的上下文 ✓✓（给「有人说话时连开」的突发采样用 ✓）。
+
+    为什么要它：突发采样需要**连续读帧**（~10fps ✓），不能每帧开关 ✗；而工具（`face_who`）也可能
+    同时想开 ✗ —— 今天实测过：两个调用方同时开 → **OpenCV 原生崩溃、进程直接死** ✗✓。
+    所以突发采样期间**持有这把锁** ✓：工具会**等**（几秒）✓，而不是把进程搞崩 ✓✓。
+    """
+    with _CAMERA_LOCK:
+        yield
 
 
 def grab_frame(index: int = 0, detector: Optional[FaceDetector] = None, tries: int = 3):
