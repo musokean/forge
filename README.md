@@ -70,6 +70,7 @@ First run auto-generates a default `config/models.yaml` (if missing) — no conf
 | **Service (#14)** | HTTP API (`forge --serve`): multi-session persistence, API-key auth (loopback-only by default), per-caller rate limiting, Swagger docs at `/docs` |
 | **Client executor (#17)** | Drive remote PCs: a light executor on each machine dials out (long poll, no inbound port) and exposes shell / files / screenshot / GUI input behind two policy layers. A four-role Computer Use loop (planner → executor → evaluator → supervisor) keeps one model from being brain, hand and judge at once |
 | **Voice (#11)** | Cascade voice pipeline with streaming transcription, sentence-level synthesis and barge-in; audio source and playback are injectable, so the whole mechanism is tested in CI without a microphone or a sound |
+| **Who it is talking to (#18)** | Opt-in face recognition inside the voice loop: about once a second it matches who is in front of the camera against a local store of 128-dim vectors (no images kept, store kept outside the repo) and injects one line of scene text into the system prompt, so it addresses you by name. Two enrolled people: highest cross-person similarity 0.267 against 0.482 same-person, threshold 0.36 - and it says "not sure" rather than guessing |
 | **Hardware (#16)** | Serial / MQTT real link behind a control plane: asset registry, staged policy, command state machine (Created→Sent→Accepted→Applied) with timeout, retries and rollback, plus agent-side temperature/runtime guards. `device_sim.py` speaks the same protocol, so the whole link is testable with no hardware |
 | **Safety (#4)** | Command sandbox: Docker isolation when available (no network, read-only mount, memory/CPU/PID caps, non-root), hardened local fallback, dangerous-command blocking. Host environment is never handed to child processes — a command can no longer read your API keys |
 | **Logging (#7)** | Structured JSONL logs with rotation, retention and **secret redaction**; per-run correlation ids (role/model/steps/tokens/latency); HTTP request log; `/logs` to inspect |
@@ -250,3 +251,48 @@ forge --voice                              # talk, and interrupt it mid-answer
   while it is *thinking*, where there is no echo to confuse it), and `forge --voice --ptt` only
   captures while you hold space — press to stop it mid-sentence, release to send that utterance.
   Full duplex with headphones still gives the smoothest barge-in.
+
+## Who it is talking to (#18)
+
+The voice loop can look at the camera, recognise the people in front of it, and put that into the
+conversation — so it addresses you by name instead of "the person in the room". Opt-in, off by default.
+
+```bash
+pip install "handcraft-agent[vision]"      # opencv-python<5 + numpy
+forge --voice --identify                   # recognises who is present, ~1 Hz
+```
+
+What it does, end to end: the camera sees a face → the face is matched against a local identity store
+→ one line of scene text is injected into the system prompt before each answer → the model refers to
+whoever is there. Measured on the real machine, one frame, same instant:
+
+| Check | Result |
+|-------|--------|
+| Same person, enrolment vs recognition recipe | **0.894 / 0.894** — identical vectors (cosine 1.000) |
+| Two people enrolled, cross-person similarity | median 0.149, **highest 0.267** |
+| Same person, lowest pair | **0.482** |
+| Threshold | **0.36** — sits between them, with room on both sides |
+| Wrong-person matches in testing | **0** (921 frames of one person against another's enrolment) |
+
+- **It says when it cannot tell** — with two people in frame the mouth-motion signal cannot separate
+  who is speaking (the distributions overlap), so it says so instead of guessing. "I don't guess —
+  guessing wrong is worse than not knowing" is the intended behaviour, not a limitation to patch over
+- **Enrol your own people**: `forge --voice --identify`, then ask it to enrol you. It captures **12
+  frames over ~5 seconds** so poses vary — measured on held-out poses, 12 frames recognise at 94%,
+  3 frames at 68%. More frames never caused a wrong match; it only ever says "not sure"
+- **Forget someone**: `face_forget <name>` deletes their vectors
+- **Privacy**: only 128-dimension feature vectors are stored, never images; the store lives outside
+  the repository at `~/.forge/faces.db`; the camera is opened only while `--identify` runs and the
+  probe closes it between reads
+
+**Small things worth knowing**
+
+- `--identify` is **off unless you ask for it** — no camera, no recognition, no prompts changed
+- Recognition works while the answer is being spoken too, but on **speakers** the loop is
+  half-duplex: it stops listening while it talks. Finish your sentence and let it finish its answer,
+  or use `--ptt` if you want to cut in
+- Speech recognition defaults to Whisper `base`, which is thin for Chinese. `--stt-model small`
+  is noticeably better (one-off ~460 MB download)
+- It knows the difference between "nobody here", "someone here I don't know" and "this is 满仓" —
+  and it will name you only in the last case
+
