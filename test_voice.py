@@ -591,7 +591,14 @@ class TestMicListener(unittest.TestCase):
             self.assertTrue(_wait_for(lambda: lis.barge_in, timeout=3))
             lis.clear()
             self.assertFalse(lis.barge_in)
-            self.assertEqual(lis.peek_seconds(), 0.0)
+            # ⚠️ 2026-10-06 修 CI flake（Python 3.13 上 `0.1 != 0.0` ✗）：
+            #    `clear()` 只清缓冲，**读线程还在跑** ✓ → 它随时可能再塞进一个块，
+            #    此刻断言"恰好 0"就是和读线程抢 ✗（3.9/3.11 恰好没撞上 ✓，本机 12 连跑也没撞上 ✗）。
+            #    确定性做法：**先停读线程，再清一次**，此时"空"才是确定的 ✓（这也正是
+            #    Agent 关停时走的顺序 ✓，值得测 ✓）。
+            lis.stop()
+            lis.clear()
+            self.assertEqual(lis.peek_seconds(), 0.0, "读线程停了以后，clear() 必须真的清空 ✓")
         finally:
             lis.stop()
 
