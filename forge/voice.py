@@ -1561,12 +1561,10 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
     aec_engine = None
     ref_tap = None
     suppressor = None          # AEC 关闭时为空（否则下面调用处 UnboundLocalError）
-    if aec and str(aec).lower() not in ("none", "off", "0"):
-        # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
-        aec_engine = make_aec(aec, samplerate=16000)
-        ref_tap = ReferenceTap(samplerate=16000)
     # #18 身份感知（**显式开启才开摄像头** ✓，隐私默认关 ✓）：
     #   后台 ~1Hz 看一眼「画面里有谁」，结果在每轮回答前注入 system 提示 → 它就知道在跟谁说话 ✓
+    #   注意：这一段必须**在 `if aec:` 之外** ✗✓ —— 一开始插在块内，结果 AEC 一关它就静默失效 ✗；
+    #   而且此前用了 `emit(...)`，那是别的函数的局部名 ✗ → NameError 直接把整轮语音崩掉 ✗✓（跑起来才发现 ✓）。
     probe = None
     if identify:
         try:
@@ -1579,10 +1577,14 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
             except Exception:
                 _store = _emb = None            # 没模型/库为空 → 只报「几个人」✓，不假装有名字 ✗
             probe = PresenceProbe(interval_s=1.0, store=_store, embedder=_emb).start()
-            emit("identify_on", interval_s=1.0)
+            print("[现场身份] 已开启：后台 ~1Hz 看一眼画面，结果注入每轮对话（默认关 ✓ 隐私优先 ✓）")
         except Exception as exc:                # 摄像头侧出问题**不能**拖垮语音 ✓
-            emit("identify_unavailable", error=str(exc)[:80])
+            print("[现场身份] 不可用（不影响语音 ✓）：%s" % str(exc)[:80])
             probe = None
+    if aec and str(aec).lower() not in ("none", "off", "0"):
+        # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
+        aec_engine = make_aec(aec, samplerate=16000)
+        ref_tap = ReferenceTap(samplerate=16000)
         suppressor = ResidualSuppressor(samplerate=16000)   # AEC 之后那一步：压住非线性残余回声
         if sink == "null":
             sink_obj = NullSink()

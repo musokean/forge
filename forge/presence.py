@@ -395,6 +395,7 @@ class PresenceProbe:
         self.ticks = 0
         self._ambient = ""
         self._err = ""
+        self.first_error = ""       # 第一次失败的**真实原因**（只报一次 ✓，别吞 ✗）
         self._lock = threading.Lock()
         self._stop = threading.Event()
         self._thread = None
@@ -408,11 +409,61 @@ class PresenceProbe:
             self._mon.recognizer = self._make_recognizer()
 
     def _make_recognizer(self):
+        """用**和登记完全相同**的配方（对齐路径 ✓），避免两条管线混用 ✗。
+
+        2026-10-06 真机踩到 ✗✓：原先这里自己拼 `embedder.embed(crop_face(...))`（裁剪 ✗），而登记走的是
+        `embed_face` 的**对齐**路径 ✓ —— 同一张脸同一帧，两条路的向量余弦只有 **0.537** ✗，匹配分从 **0.762
+        掉到 0.448**（贴着 0.36 阈值 ✓ → 稍一变姿态就报「未登记」✗，真机就是这个症状 ✓）。
+        **别混用两条管线** ✗✓：早前那句「对齐 vs 裁剪没差别」测的是各自**内部**的匹配，从没测过**混用** ✗。
+        """
+        from .faces import crop_face
+
+        cache = {"img": None, "rows": None}
+
+        def _rows(image):
+            """这一帧的人脸行（按需算一次 ✓，避免每个目标都重跑检测 ✗）。"""
+            det = self._detector
+            if det is None or not hasattr(det, "detect_with_landmarks"):
+                return None
+            if cache["img"] is image:
+                return cache["rows"]
+            try:
+                found = det.detect_with_landmarks(image)
+            except Exception:
+                found = None
+            cache["img"], cache["rows"] = image, (found or None)
+            return cache["rows"]
+
+        def _box4(b):
+            """取框的四个数 ✓ —— `Face`（dataclass，有 .x/.y/.w/.h ✓）与 `(x,y,w,h)` 两种形态都吃 ✓。"""
+            if hasattr(b, "x"):
+                return (b.x, b.y, b.w, b.h)
+            return (b[0], b[1], b[2], b[3])
+
+        def _row_for(rows, box):
+            """按框位置找对应的人脸行 ✓（同一 detector、同一帧 → 顺序一致 ✓）。"""
+            bx = _box4(box)
+            best, best_i = None, 0
+            for i, item in enumerate(rows):
+                f = _box4(item[0])            # item = (Face, row) ✓ —— 不是 (框, row) ✗✓
+                d = sum(abs(f[k] - bx[k]) for k in range(4))
+                if best is None or d < best:
+                    best, best_i = d, i
+            return rows[best_i][1]
+
         def recognize(image, box):
             try:
-                m = self._store.match(self._embedder.embed(crop_face(image, box)))
+                rows = _rows(image)
+                if rows and hasattr(self._embedder, "embed_aligned"):
+                    vec = self._embedder.embed_aligned(image, _row_for(rows, box))   # 与登记同路 ✓
+                else:
+                    vec = self._embedder.embed(crop_face(image, box))                # 退路（无 YuNet 时 ✓）
+                m = self._store.match(vec)
                 return (m.name, m.score) if not m.unknown else ("", m.score)
-            except Exception:
+            except Exception as exc:                # 静默吞掉 ⇒ 现场全是「未登记」而无人知道为什么 ✗✓
+                if not self.first_error:
+                    self.first_error = "recognize: %s: %s" % (type(exc).__name__, exc)
+                    print("[现场身份] 识别失败（只报一次，不影响语音 ✓）：%s" % self.first_error)
                 return "", 0.0
         return recognize
 
@@ -450,7 +501,19 @@ class PresenceProbe:
         from .camera import grab_frame, make_detector
         if self._detector is None:
             self._detector = make_detector()
-        frame, faces = grab_frame(index=self.index, detector=self._detector)
+        # 工具（face_who/look）可能与探针抢摄像头 ✗ → 先礼让重试 ✓；仍失败就跳过本次，
+        # 保留上一次观察（**别**把现场信息清空 ✗），并记下原因 ✓
+        frame = faces = None
+        last = None
+        for attempt in range(3):
+            try:
+                frame, faces = grab_frame(index=self.index, detector=self._detector)
+                break
+            except Exception as exc:
+                last = exc
+                time.sleep(0.05 * (attempt + 1))
+        if frame is None:
+            raise last if last is not None else RuntimeError("摄像头取帧失败")
         self._mon.observe(frame, faces)
         text = format_ambient(self._mon.snapshot(), seconds=self.look_s)
         self.ticks += 1

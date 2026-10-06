@@ -441,3 +441,89 @@ class TestFormatAmbient(unittest.TestCase):
     def test_speaker_off_camera(self):
         p = self._probe_with([])
         self.assertIn("不在画面里", p.ambient_for_answer())
+
+class TestProbeUsesSameRecipeAsEnrolment(unittest.TestCase):
+    """★ 探针识别必须走**和登记完全相同**的管线 ✓✓。
+
+    2026-10-06 真机踩到 ✗：探针自己拼 `embedder.embed(crop_face(...))`（裁剪 ✗），登记走
+    `embed_face`（**对齐** ✓）—— 同一张脸同一帧，两条路的向量余弦只有 **0.537**，匹配分从
+    **0.762 掉到 0.448**（贴着 0.36 阈值 → 真机上就表现为「现场全是未登记」✗）。
+    这条测试**不需要摄像头** ✓：假检测器给关键点、假提取器**记录被调用了哪个方法** ✓。
+    """
+
+    def setUp(self):
+        if not HAS_NUMPY:
+            self.skipTest("需要 numpy")
+
+    def test_recognizer_prefers_aligned_path_when_landmarks_available(self):
+        from forge.presence import PresenceProbe
+
+        calls = []
+
+        class FakeFace:
+            x, y, w, h, score = 10, 10, 80, 80, 0.95
+
+            @property
+            def area(self):
+                return self.w * self.h
+
+        class FakeDet:
+            def detect(self, image):
+                return [FakeFace()]
+
+            def detect_with_landmarks(self, image):
+                return [(FakeFace(), "ROW")]          # ← 有关键点 → 必须走对齐 ✓
+
+        class FakeEmb:
+            def embed(self, crop):
+                calls.append("embed")
+                return [0.0] * 8
+
+            def embed_aligned(self, image, row):
+                calls.append("embed_aligned")
+                assert row == "ROW", "必须把关键点行原样交给 embed_aligned ✓"
+                return [1.0] + [0.0] * 7
+
+        class FakeMatch:
+            name, score, unknown = "满仓", 0.9, False
+
+        class FakeStore:
+            def match(self, vec, **kw):
+                assert vec[0] == 1.0, "拿到的必须是 embed_aligned 的向量 ✓"
+                return FakeMatch()
+
+        probe = PresenceProbe(interval_s=1.0, store=FakeStore(), embedder=FakeEmb(), detector=FakeDet())
+        rec = probe._make_recognizer()
+        nm, sc = rec(object(), FakeFace())
+        self.assertEqual(calls, ["embed_aligned"], "探针必须走对齐路径，绝不能退回裁剪 ✗")
+        self.assertEqual(nm, "满仓")
+        self.assertGreater(sc, 0.0)
+        self.assertEqual(probe.first_error, "", "不该有静默失败 ✓")
+
+    def test_recognizer_reports_failure_reason_once(self):
+        """识别失败必须**报出原因**（只报一次）✓ —— 静默吞掉 ⇒ 现场全是「未登记」而无人知道为什么 ✗✓。"""
+        from forge.presence import PresenceProbe
+
+        class BoomEmb:
+            def embed(self, crop):
+                raise RuntimeError("模型加载失败（模拟）")
+
+        class FakeDet:
+            def detect(self, image):
+                return []
+
+        class FakeFace:
+            x, y, w, h, score = 0, 0, 50, 50, 0.9
+
+            @property
+            def area(self):
+                return 2500
+
+        probe = PresenceProbe(interval_s=1.0, store=object(), embedder=BoomEmb(), detector=FakeDet())
+        rec = probe._make_recognizer()
+        img = np.zeros((48, 48, 3), dtype=np.uint8)          # 假图要有 .shape ✓，否则异常发生在更早一步 ✗
+        nm1, sc1 = rec(img, FakeFace())
+        nm2, _ = rec(img, FakeFace())
+        self.assertEqual((nm1, sc1), ("", 0.0))
+        self.assertEqual(nm2, "")
+        self.assertIn("模型加载失败（模拟）", probe.first_error, "失败原因必须被记下来 ✓")
