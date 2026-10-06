@@ -385,8 +385,11 @@ class TestNotes(unittest.TestCase):
     """#18 按人记忆最小版：备注写/读/随人删除 ✓。"""
 
     def test_note_roundtrip_and_people_lists_it(self):
-        tmp = os.path.join(tempfile.mkdtemp(), "n.db")
+        d = tempfile.TemporaryDirectory(prefix="forge-test-")   # 自动清理 ✓（别用裸 mkdtemp 留一地垃圾 ✗）
+        self.addCleanup(d.cleanup)
+        tmp = os.path.join(d.name, "n.db")
         st = FaceStore(tmp)
+        self.addCleanup(st.close)
         try:
             st.enroll("满仓", [np.ones(128, dtype=np.float32)])
             st.set_note("满仓", "喜欢冰美式")
@@ -399,8 +402,11 @@ class TestNotes(unittest.TestCase):
             st.close()
 
     def test_note_on_unknown_name_raises(self):
-        tmp = os.path.join(tempfile.mkdtemp(), "n2.db")
+        d = tempfile.TemporaryDirectory(prefix="forge-test-")
+        self.addCleanup(d.cleanup)
+        tmp = os.path.join(d.name, "n2.db")
         st = FaceStore(tmp)
+        self.addCleanup(st.close)
         try:
             with self.assertRaises(FaceError):
                 st.set_note("查无此人", "x")
@@ -410,8 +416,11 @@ class TestNotes(unittest.TestCase):
             st.close()
 
     def test_forget_removes_note_with_person(self):
-        tmp = os.path.join(tempfile.mkdtemp(), "n3.db")
+        d = tempfile.TemporaryDirectory(prefix="forge-test-")
+        self.addCleanup(d.cleanup)
+        tmp = os.path.join(d.name, "n3.db")
         st = FaceStore(tmp)
+        self.addCleanup(st.close)
         try:
             st.enroll("满仓", [np.ones(128, dtype=np.float32)])
             st.set_note("满仓", "临时备注")
