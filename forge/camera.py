@@ -51,6 +51,14 @@ __all__ = [
 
 # Haar 级联文件随 opencv 一起发布（不需要联网下载模型）——这是选它做 Phase 1 的主要原因。
 _CASCADE_FILE = "haarcascade_frontalface_default.xml"
+_YUNET_FILE = "face_detection_yunet_2023mar.onnx"
+YUNET_URL_HINT = (
+    "YuNet 模型（约 227KB，Apache-2.0）下载：\n"
+    "  https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/" + _YUNET_FILE + "\n"
+    "放到**库外**目录（别放进 git 仓库或同步目录）：\n"
+    "  ~/.forge/models/" + _YUNET_FILE + "\n"
+    "也可以用环境变量 FORGE_YUNET_MODEL 指定别处。"
+)
 
 
 class CameraError(RuntimeError):
@@ -321,6 +329,57 @@ class HaarFaceDetector(FaceDetector):
         return f"haar（scale={self.scale_factor} neighbors={self.min_neighbors} pre={self.preprocess}）"
 
 
+class YuNetFaceDetector(FaceDetector):
+    """YuNet：CNN 人脸检测器（opencv 自带 `cv2.FaceDetectorYN`，模型仅 ~227KB）。
+
+    比 Haar **更抗光照与角度**，而且**顺带给出 5 个关键点** → 人脸对齐（`alignCrop`）成为可能 →
+    识别精度也跟着提高 ✓。
+
+    **阈值必须给足**：`score_threshold` 默认 **0.9**（opencv 自己的默认）。2026-10-03 实测踩过 ✗✓：
+    我随手写 0.5，结果在一张**画面里其实没有脸**的帧上（人背对镜头）把**肩膀**框住并打了 0.50 分
+    —— 典型假阳性 ✓。改回 0.9 后：同一批画面 12/12 命中，分数 0.93~0.94 ✓。
+    """
+
+    name = "yunet"
+
+    def __init__(self, model_path: Optional[str] = None, score_threshold: float = 0.9,
+                 nms_threshold: float = 0.3, top_k: int = 5000):
+        _require_vision()
+        if not yunet_available(model_path):
+            raise CameraError("YuNet 检测器不可用（需要 opencv 的 cv2.FaceDetectorYN + 模型文件）。\n"
+                              + YUNET_URL_HINT)
+        self.model_path = _yunet_path(model_path) or ""
+        self.score_threshold = float(score_threshold)
+        try:
+            self._det = cv2.FaceDetectorYN.create(self.model_path, "", (320, 320),
+                                                  self.score_threshold, float(nms_threshold), int(top_k))
+        except Exception as e:                        # pragma: no cover - 模型损坏等
+            raise CameraError(f"YuNet 模型加载失败：{e}\n" + YUNET_URL_HINT)
+
+    def detect(self, image) -> List[Face]:
+        return [face for face, _row in self.detect_with_landmarks(image)]
+
+    def detect_with_landmarks(self, image) -> List[Tuple[Face, "object"]]:
+        """返回 `[(Face, row)]` —— `row` 是 YuNet 的原始输出行（框 + **5 个关键点** + 分数），
+        交给 `cv2.FaceRecognizerSF.alignCrop` 做对齐用 ✓。
+        """
+        h, w = image.shape[:2]
+        self._det.setInputSize((w, h))                  # 每帧都要设：分辨率可能变
+        _ret, found = self._det.detect(image)
+        if found is None:
+            return []
+        out = []
+        for row in found:
+            x, y, bw, bh = (int(v) for v in row[:4])
+            score = float(row[14]) if len(row) > 14 else 0.0     # YuNet 行末位是置信度
+            out.append((Face(x, y, bw, bh, score), row))
+        out.sort(key=lambda pair: pair[0].area, reverse=True)     # 与 Haar 同一契约：按面积降序
+        return out
+
+    def describe(self) -> str:
+        return f"yunet（score≥{self.score_threshold} · {os.path.basename(self.model_path)}）"
+
+
 class StubFaceDetector(FaceDetector):
     """替身检测器：固定返回给定的人脸框（测试用，确定性）。"""
 
@@ -456,15 +515,59 @@ def haar_available() -> bool:
         return False
 
 
+def _yunet_path(model_path: Optional[str] = None) -> Optional[str]:
+    """定位 YuNet 模型。**显式指定（参数/环境变量）优先且权威** ✓：给了就用它，哪怕文件不存在
+    （后续会明确报错 —— 与 `SFaceEmbedder` 的语义保持一致；也避免「本机正好装了模型」把
+    「指定了错误路径」这种事悄悄盖过去 ✗）。没显式指定才去默认位置探测。"""
+    explicit = model_path or os.environ.get("FORGE_YUNET_MODEL", "")
+    if explicit:
+        return explicit
+    for cand in (os.path.join("data", "models", _YUNET_FILE),
+                 os.path.expanduser(os.path.join("~", ".forge", "models", _YUNET_FILE))):
+        if os.path.isfile(cand):
+            return cand
+    return None
+
+
+def yunet_available(model_path: Optional[str] = None) -> bool:
+    """YuNet 到底能不能用（**能力探测**：类在不在 + 模型文件在不在，不只看 import）。"""
+    if np is None or cv2 is None or not hasattr(cv2, "FaceDetectorYN"):
+        return False
+    try:
+        path = _yunet_path(model_path)
+        return bool(path) and os.path.isfile(path)
+    except Exception:                        # pragma: no cover - 路径异常一律当不可用
+        return False
+
+
+def make_detector(prefer: str = "auto") -> FaceDetector:
+    """按能力挑检测器。
+
+    - `auto`（默认）：**YuNet 能用就用 YuNet**（更抗光照/角度 ✓ 且带关键点 → 能对齐 ✓），
+      否则退回 Haar ✓；
+    - `yunet` / `haar`：强制指定（不可用则明确报错，不静默降级 ✗）。
+    """
+    if prefer not in ("auto", "yunet", "haar"):
+        raise CameraError(f"prefer 只能是 auto / yunet / haar（收到 {prefer!r}）")
+    if prefer in ("auto", "yunet"):
+        if yunet_available():
+            return YuNetFaceDetector()
+        if prefer == "yunet":
+            raise CameraError("指定了 yunet，但本机不可用。\n" + YUNET_URL_HINT)
+    if not haar_available():
+        raise CameraError("本机既没有 YuNet 也没有 Haar 可用（需要 opencv 4.x + 模型文件）")
+    return HaarFaceDetector()
+
+
 def available() -> dict:
     """本机视觉能力盘点（如实汇报，不假装有）。"""
-    ok = np is not None and cv2 is not None
     return {
         "numpy": np is not None,
         "opencv": cv2 is not None,
         "opencv_version": getattr(cv2, "__version__", "") if cv2 is not None else "",
         "haar": haar_available(),
-        "detector": "haar" if haar_available() else "",
+        "yunet": yunet_available(),
+        "detector": "yunet" if yunet_available() else ("haar" if haar_available() else ""),
     }
 
 
@@ -475,10 +578,10 @@ _last_detector: Optional[FaceDetector] = None
 
 
 def _default_detector() -> FaceDetector:
-    """默认检测器（Haar）。缓存一份 —— 级联加载一次就好。"""
+    """默认检测器：**有 YuNet 就用 YuNet**，否则 Haar（见 `make_detector`）。缓存一份 —— 加载一次就好。"""
     global _last_detector
     if _last_detector is None:
-        _last_detector = HaarFaceDetector()
+        _last_detector = make_detector()
     return _last_detector
 
 

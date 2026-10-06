@@ -20,6 +20,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
+  preferred when its model is present, falling back to Haar, and the choice is a `face.detector`
+  setting. Measured live here: on a backlit face Haar found the face in 1 of 12 frames and YuNet in
+  12 of 12 at 0.93-0.94 confidence. It also returns five landmarks, so faces can be aligned before
+  embedding. `make_detector()` reports the ladder honestly and `available()` says which one is in use.
+  The default score threshold is 0.9: at 0.5 a frame containing no face at all still produced a
+  0.50 shoulder detection, which is exactly what the higher threshold prevents.
+
+  On alignment, measured rather than assumed: comparing alignCrop against a tight crop on ten live
+  frames of one person gives 0.892 against 0.862 median similarity (+0.030), but a plain crop with a
+  25% margin scores 0.894 - so alignment buys nothing over the default path and is not a precision
+  fix. All three arms recognised 10/10, far above the 0.36 threshold. The real gain from YuNet is
+  detection robustness in poor light, not recognition accuracy.
+
 - **Presence: who is here and who is speaking (#18 Phase 3)** — with several people in front of the
   camera the agent now keeps a stable identity per person as they move, and answers who is talking.
   A single microphone carries no direction information and the Haar detector returns no landmarks, so

@@ -12,7 +12,9 @@
 """
 import base64
 import importlib.util
+import os
 import sys
+import tempfile
 import unittest
 
 try:                          # 无 numpy / cv2 环境：模块仍可被收集，相关用例走 skip
@@ -30,13 +32,14 @@ sys.path.insert(0, ".")
 from forge.camera import (  # noqa: E402
     CameraError, Face, FakeFrameSource, Frame, HaarFaceDetector, OpenCvFrameSource,
     StubFaceDetector, annotate, available, capture, encode_image_b64, format_observation,
-    haar_available, observe, probe_camera,
+    haar_available, make_detector, observe, probe_camera, yunet_available,
 )
 
 
 # 光有 cv2 不够：OpenCV 5.x 移除了 Haar（见 camera.haar_available）
 HAS_HAAR = HAS_VISION and haar_available()
 needs_haar = unittest.skipUnless(HAS_HAAR, "Haar 需要 opencv 4.x（5.x 已移除 Haar 级联）")
+needs_vision = unittest.skipUnless(HAS_VISION, "需要 opencv + numpy（pip install \"handcraft-agent[vision]\"）")
 
 
 class DummyImage:
@@ -127,6 +130,40 @@ class TestDetector(unittest.TestCase):
         blank = np.zeros((240, 320, 3), dtype=np.uint8)
         self.assertEqual(det.detect(blank), [])
         self.assertIn("haar", det.describe())
+
+    @needs_vision
+    def test_make_detector_follows_the_capability_rule(self):
+        """`auto` 的规则：有 YuNet（类 + 模型文件）就用 YuNet，否则 Haar。
+
+        随本机能力自适应，但**断言的是规则本身**（不是跳过 ✗）。
+        """
+        self.assertEqual(make_detector().name, "yunet" if yunet_available() else "haar")
+        self.assertEqual(make_detector("haar").name, "haar", "强制 haar 必须给 Haar")
+
+    @needs_vision
+    def test_make_detector_rejects_unknown_preference(self):
+        with self.assertRaises(CameraError):
+            make_detector("magic")
+
+    @needs_vision
+    def test_yunet_without_model_reports_clearly(self):
+        """YuNet 缺模型：必须**明确报不可用 + 给下载地址**，不静默降级 ✗。
+
+        不依赖本机是否装了模型：显式路径优先且权威 ✓。
+        """
+        old = os.environ.get("FORGE_YUNET_MODEL")
+        os.environ["FORGE_YUNET_MODEL"] = os.path.join(tempfile.mkdtemp(), "missing.onnx")
+        try:
+            self.assertFalse(yunet_available(), "指向不存在的模型时不得声称可用")
+            with self.assertRaises(CameraError) as ctx:
+                make_detector("yunet")
+            self.assertIn("opencv_zoo", str(ctx.exception), "报错里要带下载地址")
+            self.assertEqual(make_detector().name, "haar", "auto 应安静退回 Haar ✓")
+        finally:
+            if old is None:
+                os.environ.pop("FORGE_YUNET_MODEL", None)
+            else:
+                os.environ["FORGE_YUNET_MODEL"] = old
 
     @needs_haar
     def test_preprocess_defaults_to_clahe(self):

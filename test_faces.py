@@ -34,10 +34,10 @@ sys.path.insert(0, ".")
 
 from forge.faces import (  # noqa: E402
     DEFAULT_MARGIN, DEFAULT_THRESHOLD, FaceError, FaceStore, StubEmbedder,
-    available, cosine, crop_face, face_defaults, make_embedder, sface_available,
+    available, cosine, crop_face, embed_face, face_defaults, make_embedder, sface_available,
 )
 
-from forge.camera import Face  # noqa: E402
+from forge.camera import Face, StubFaceDetector  # noqa: E402
 
 
 def vec_of(seed_text: str, dim: int = 128):
@@ -46,6 +46,11 @@ def vec_of(seed_text: str, dim: int = 128):
         def tobytes(self):
             return seed_text.encode("utf-8")
     return StubEmbedder(dim).embed(_Img())
+
+
+def _small_image(h=48, w=64, v=120):
+    """合成小图（够放下一张小脸的框）—— 全程不碰摄像头 ✓。"""
+    return np.full((h, w, 3), v, dtype=np.uint8)
 
 
 class TestSimilarity(unittest.TestCase):
@@ -148,6 +153,61 @@ class TestFaceStore(unittest.TestCase):
         dim, blob = self.store._conn.execute("SELECT dim, vec FROM faces LIMIT 1").fetchone()
         self.assertEqual(dim, 128)
         self.assertEqual(len(blob), 128 * 4)             # float32 × 维度
+
+
+class _LandmarkDetector:
+    """替身：像 YuNet 一样能出关键点（但不加载任何模型）。"""
+
+    name = "fake-landmarks"
+
+    def __init__(self, box):
+        self.box = box
+
+    def detect(self, image):
+        return [self.box]
+
+    def detect_with_landmarks(self, image):
+        return [(self.box, "ROW")]
+
+
+class _AlignEmbedder(StubEmbedder):
+    """替身：支持对齐，并记下是否真的收到了关键点行。"""
+
+    def __init__(self):
+        super().__init__()
+        self.aligned_with = None
+
+    def embed_aligned(self, image, row):
+        self.aligned_with = row
+        return self.embed(image)
+
+
+class TestEmbedFace(unittest.TestCase):
+    """**有对齐就用对齐**（更准），没有就退回裁剪 —— 三条分支都要覆盖 ✓。"""
+
+    @needs_numpy
+    def test_uses_alignment_when_detector_has_landmarks(self):
+        emb, img = _AlignEmbedder(), _small_image()
+        vec, how = embed_face(emb, img, _LandmarkDetector(Face(4, 4, 8, 8)))
+        self.assertEqual(how, "对齐")
+        self.assertEqual(emb.aligned_with, "ROW", "关键点行必须传进 alignCrop 那条路")
+        self.assertEqual(len(vec), emb.dim)
+
+    @needs_numpy
+    def test_falls_back_to_crop_for_haar_like_detector(self):
+        _vec, how = embed_face(StubEmbedder(), _small_image(), StubFaceDetector([Face(4, 4, 8, 8)]))
+        self.assertEqual(how, "裁剪")
+
+    @needs_numpy
+    def test_falls_back_when_embedder_cannot_align(self):
+        """检测器有关键点、但提取器不支持对齐（例如替身）→ 安静退回裁剪，不报错 ✓。"""
+        _vec, how = embed_face(StubEmbedder(), _small_image(), _LandmarkDetector(Face(4, 4, 8, 8)))
+        self.assertEqual(how, "裁剪")
+
+    @needs_numpy
+    def test_no_face_raises_a_clear_error(self):
+        with self.assertRaises(FaceError):
+            embed_face(StubEmbedder(), _small_image(), StubFaceDetector([]))
 
 
 class TestMatch(unittest.TestCase):

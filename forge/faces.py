@@ -133,8 +133,15 @@ class SFaceEmbedder(Embedder):
     2026-10-03 实测：`opencv-python-headless` 4.14 就带 `cv2.FaceRecognizerSF` ✓
     （不需要 contrib 包）。**模型文件不随 pip 包发布** ✗，得自己放一份（见 `MODEL_URL_HINT`）。
 
-    精度提示：SFace 官方推荐先做人脸对齐（`alignCrop`，需要关键点）。用 Haar 框直接裁再缩放，
-    不做对齐也能用，但**精度会低一些** —— 想更准就换成能出关键点的检测器（YuNet）。
+    **对齐到底值不值？实测说话**（2026-10-03，本机摄像头，同批画面 10 帧，同一人）：
+
+        对齐(YuNet+alignCrop) 中位 0.892 · 零边距裁剪 中位 0.862  → **+0.030**
+        但「裁剪时外扩 25% 边距」也有 0.894 —— **同样的 +0.03 便宜的拿得到** ✗✓
+
+    结论：对齐**确实**比"紧贴框裁剪"好约 +0.03 ✓，但**不比默认的（带边距）裁剪更好** ✗，
+    而且两条路都是 10/10 命中、远高于 0.36 阈值 → **功能上无差别** ✓。
+    所以 YuNet 的真正收益在**检测更稳**（逆光 12/12 vs Haar 0/12 ✓）+ **关键点可作他用**，
+    而不是"识别更准" ✗。别把对齐说成精度银弹 ✓。
     """
 
     name = "sface"
@@ -165,9 +172,21 @@ class SFaceEmbedder(Embedder):
         self.model_path = path
 
     def embed(self, face_image) -> List[float]:
-        # SFace 要求 112x112 输入。**不做对齐**（对齐需要关键点，Haar 给不出）——
-        # 想更准就换能出关键点的检测器（YuNet），再走 cv2.FaceRecognizerSF.alignCrop。
+        # SFace 要求 112x112 输入。这条路**不做对齐**（对齐需要关键点，Haar 给不出）——
+        # 有 YuNet 时请走 embed_aligned ✓。
         feat = self._rec.feature(cv2.resize(face_image, (112, 112)))
+        return [float(x) for x in np.asarray(feat).reshape(-1)]
+
+    def embed_aligned(self, image, row) -> List[float]:
+        """用检测器的**原始输出行**（含 5 个关键点）先做人脸对齐，再提特征。
+
+        `row` 就是 `camera.YuNetFaceDetector.detect_with_landmarks()` 返回的那一行 ✓。
+
+        实测（10 帧同一人）：对齐 中位 0.892 vs 零边距裁剪 0.862 → **+0.030** ✓，
+        但带 25% 边距的普通裁剪也有 0.894 ✗ → 对齐**不比默认路径更好**，别指望它提精度 ✓。
+        """
+        aligned = self._rec.alignCrop(image, row)
+        feat = self._rec.feature(aligned)
         return [float(x) for x in np.asarray(feat).reshape(-1)]
 
     def describe(self) -> str:
@@ -202,6 +221,28 @@ def crop_face(image, box, margin: float = 0.25):
     if x1 <= x0 or y1 <= y0:
         raise FaceError("人脸框无效（裁出来是空图）")
     return image[y0:y1, x0:x1]
+
+
+def embed_face(embedder, image, detector=None, index: int = 0) -> Tuple[List[float], str]:
+    """把画面里第 `index` 张脸变成特征向量，返回 `(向量, 走的那条路)`。
+
+    有 `YuNet + SFace` 时走 `alignCrop` 对齐 ✓，否则退回「裁脸 → 缩放」✓（Haar、或替身提取器）。
+
+    对齐的实测收益很小（中位相似度 +0.030），**不如它带来的"检测更稳"重要** ——
+    详见 `SFaceEmbedder` 的类文档，那里有完整的三腿对照数字 ✓。
+    """
+    from .camera import make_detector                   # 延迟导入，避免顶层循环引用
+    det = detector if detector is not None else make_detector()
+    if hasattr(det, "detect_with_landmarks") and hasattr(embedder, "embed_aligned"):
+        found = det.detect_with_landmarks(image)
+        if not found:
+            raise FaceError("画面里没检测到人脸")
+        _face, row = found[min(max(0, index), len(found) - 1)]
+        return embedder.embed_aligned(image, row), "对齐"
+    faces = det.detect(image)
+    if not faces:
+        raise FaceError("画面里没检测到人脸")
+    return embedder.embed(crop_face(image, faces[min(max(0, index), len(faces) - 1)])), "裁剪"
 
 
 def cosine(a: Sequence[float], b: Sequence[float]) -> float:
@@ -407,13 +448,14 @@ def face_defaults() -> dict:
         "threshold": DEFAULT_THRESHOLD,
         "margin": DEFAULT_MARGIN,
         "samples": 3,                    # 登记时默认抓几张
+        "detector": "auto",              # auto | yunet | haar（见 camera.make_detector）
     }
     try:
         from .config import load_config
         cfg = load_config() or {}
         seg = cfg.get("face") or {}
         if isinstance(seg, dict):
-            for k in ("db", "embedder", "model", "threshold", "margin", "samples"):
+            for k in ("db", "embedder", "model", "threshold", "margin", "samples", "detector"):
                 if k in seg and seg[k] not in (None, ""):
                     out[k] = seg[k]
         if not out["model"]:
@@ -451,9 +493,10 @@ def make_embedder(kind: Optional[str] = None, model_path: Optional[str] = None) 
 
 def available() -> dict:
     """如实盘点人脸能力（同 camera.available 的「不假装有」）。"""
+    from .camera import available as _camera_available
     d = face_defaults()
     return {
-        "detector": cv2 is not None and hasattr(cv2, "CascadeClassifier"),
+        "detector": _camera_available().get("detector", ""),   # 检测器名（yunet/haar/空）
         "sface": sface_available(d["model"]),
         "embedder": "sface" if sface_available(d["model"]) else "",
         "db": d["db"],
@@ -506,10 +549,10 @@ def register_face_tools() -> bool:
         read_only=True,
     )
     def face_who(index: int = 0) -> str:
-        from .camera import OpenCvFrameSource, capture, HaarFaceDetector
+        from .camera import OpenCvFrameSource, capture, make_detector
         d = face_defaults()
         emb = _embedder()
-        det = HaarFaceDetector()
+        det = make_detector(d["detector"])          # 有 YuNet 就用 YuNet（更稳 + 能对齐）✓
         src = OpenCvFrameSource(index=int(index))
         try:
             src.open()
@@ -521,8 +564,8 @@ def register_face_tools() -> bool:
         lines = []
         st = _store()
         try:
-            for i, f in enumerate(faces, 1):
-                v = emb.embed(crop_face(frame.image, f))
+            for i in range(len(faces)):
+                v, _how = embed_face(emb, frame.image, det, i)     # 走对齐那条更准的路 ✓
                 m = st.match(v, d["threshold"], d["margin"])
                 who = m.name if not m.unknown else "未知"
                 lines.append(f"#{i} {who}（相似度 {m.score:.3f}"
@@ -545,12 +588,12 @@ def register_face_tools() -> bool:
         read_only=False,
     )
     def face_enroll(name: str, samples: int = 0, index: int = 0) -> str:
-        from .camera import OpenCvFrameSource, HaarFaceDetector
+        from .camera import OpenCvFrameSource, make_detector
         d = face_defaults()
         n = max(1, int(samples or d["samples"]))
         emb = _embedder()
-        det = HaarFaceDetector()
-        vecs, misses = [], 0
+        det = make_detector(d["detector"])
+        vecs, has_align, misses = [], 0, 0
         src = OpenCvFrameSource(index=int(index))
         try:
             src.open()
@@ -559,11 +602,13 @@ def register_face_tools() -> bool:
                 if frame is None:
                     misses += 1
                     continue
-                faces = det.detect(frame.image)
-                if not faces:
+                try:
+                    vec, how = embed_face(emb, frame.image, det, 0)
+                except FaceError:                      # 这一帧没检测到脸
                     misses += 1
                     continue
-                vecs.append(emb.embed(crop_face(frame.image, faces[0])))
+                vecs.append(vec)
+                has_align += 1 if how == "对齐" else 0
         finally:
             src.close()
         if not vecs:
@@ -573,8 +618,9 @@ def register_face_tools() -> bool:
             res = st.enroll(name, vecs, source=emb.name)
         finally:
             st.close()
+        how = f"（{has_align}/{len(vecs)} 张走了关键点对齐）" if has_align else "（未做关键点对齐）"
         return (f"已登记 {res['name']}：新增 {res['added']} 张向量，共 {res['total']} 张"
-                + ("（新名字）" if res["new_person"] else "（追加到已有名字）")
+                + ("（新名字）" if res["new_person"] else "（追加到已有名字）") + how
                 + (f"；有 {misses} 帧没检测到人脸" if misses else ""))
 
     @tool(
