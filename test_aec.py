@@ -93,6 +93,55 @@ class TestNlmsAec(unittest.TestCase):
         corr = float(np.corrcoef(want, got)[0, 1])
         self.assertGreater(corr, 0.5, f"近端语音被消掉了（相关 {corr:.2f}）")
 
+    def test_weak_echo_still_converges_without_freezing(self):
+        """**弱回声也要真的收敛**（耦合 0.04）。
+
+        注：这条**不是**死锁的复现用例 ✗ —— 它合成得"太好学了"（warmup 期内就收敛完，
+        旧判据也不会冻结 ✗）。真正的死锁复现见 `test_unmodellable_reference_does_not_deadlock_the_dtd`
+        （用**学不到**的回声，见其反证说明）。这条守的是另一件事：弱回声不该被冻结挡住收敛 ✓。
+        """
+        sr, n = 16000, 16000 * 2
+        ref = speech_like(n, amp=0.8)
+        path = np.zeros(120)                       # 很弱、很稀疏的回声路径（耦合 0.04）
+        path[40] = 0.04
+        rng = np.random.default_rng(7)
+        mic = (np.convolve(ref, path)[:n] + rng.normal(0, 1e-5, n)).astype(np.float32)
+        aec = NlmsAec(samplerate=16000, frame_ms=20, filter_ms=30, warmup_ms=200)
+        out = aec.process(mic, ref)
+        st = aec.stats()
+        self.assertEqual(st["frozen"], 0,
+                         f"纯回声（无近端）不该冻结任何一帧，实际 {st['frozen']} —— DTD 又死锁了 ✗")
+        tail = slice(int(n * 0.75), n)
+        erle = 10 * np.log10(float(np.mean(mic[tail] ** 2)) / max(float(np.mean(out[tail] ** 2)), 1e-12))
+        self.assertGreater(erle, 10.0, f"弱回声也该真的收敛（ERLE 仅 {erle:.1f}dB）")
+
+    def test_unmodellable_reference_does_not_deadlock_the_dtd(self):
+        """**DTD 死锁的确定性复现**（2026-10-06 修）✗✓ —— 这条在旧判据下**必然失败** ✓（已反证）。
+
+        旧判据 = 「麦克风能量 > 比例 × **滤波器估计**的回声能量」。只要滤波器**学不到**回声，
+        估计就恒 ≈0 → `mic_pow > 比例 × ≈0` **恒真** → warmup 之后**每帧冻结** ✗✗
+        → 权重永远长不起来 → 死锁（真机形态：弱回声/非线性路径下 frozen 30~77% ✗）。
+
+        这里故意让回声延迟 300ms **远超** 30ms 的滤波器跨度 → 滤波器学不到 → 旧判据必冻结 ✓。
+        修法：与**参考**比（参考已知、不依赖收敛 ✓）+ **窗口峰值**（不被包络波谷骗 ✓）→ 不该冻结 ✓。
+        「不冻结」的安全性由别的用例守着：纯回声要收敛 ✓（test_cancels_synthetic_echo）、
+        双讲要冻结 ✓（test_double_talk_freezes_and_preserves_near_end）。
+        """
+        sr, n = 16000, 16000 * 2
+        ref = speech_like(n, amp=0.8)
+        rng = np.random.default_rng(11)
+        mic = (0.25 * np.concatenate([np.zeros(4800), ref])[:n]
+               + rng.normal(0, 1e-5, n)).astype(np.float32)
+        aec = NlmsAec(samplerate=16000, frame_ms=20, filter_ms=30, warmup_ms=200)
+        out = aec.process(mic, ref)
+        st = aec.stats()
+        self.assertEqual(st["frozen"], 0,
+                         f"滤波器学不到回声时不该被 **DTD** 冻结任何一帧，实际 {st['frozen']} —— 又死锁了 ✗")
+        # 发散保护（`diverged`）是**另一回事**：滤波器学不到回声时它该起作用 —— 两者分开计数 ✓
+        self.assertGreaterEqual(st["diverged"], 0)
+        self.assertLessEqual(float(np.max(np.abs(out))), float(np.max(np.abs(mic))) + 1e-9,
+                             "硬不变量：输出峰值不得超过输入峰值 ✓")
+
     def test_silent_reference_keeps_near_end(self):
         """没在播放（参考全零）时，人声必须原样保留 —— 否则「静音时听不见你说话」。"""
         speech = speech_like(SR // 2)

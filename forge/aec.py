@@ -73,14 +73,17 @@ class NlmsAec(AecEngine):
     · `frame_ms`   分块长度（与麦克风块一致最好，20ms 是常见值）
     · `filter_ms`  自适应滤波器长度 = 能覆盖的「延迟 + 混响」上限（越长越稳、越吃 CPU）
     · `mu`         步长（0.2-0.5 常用；太大发散、太小收敛慢）
-    · `dtd_ratio`  Geigel 双讲门限：麦克风峰值 > 参考近期峰值 × 该比例 → 判为近端说话 → 冻结
+    · `dtd_ratio`  Geigel 双讲门限：**窗口内**麦克风峰值 > **窗口内**参考峰值 × 该比例 → 判为近端说话 → 冻结。
+      ★ 2026-10-06 修死锁：判据**必须与参考比（而不是与滤波器估计比）** —— 参考是已知的，
+      不依赖收敛 ✓；与「估计」比会在**弱回声 + 未收敛**时恒判双讲 → 永远冻结 → 权重长不起来 ✗✗。
     """
 
     name = "nlms"
 
     def __init__(self, samplerate: int = 16000, frame_ms: int = 20, filter_ms: int = 100,
                  mu: float = 0.35, eps: float = 1e-6, dtd_ratio: float = 2.0,
-                 warmup_ms: int = 300, w_max: float = 1.5, bypass_ratio: float = 1.25):
+                 warmup_ms: int = 300, w_max: float = 1.5, bypass_ratio: float = 1.25,
+                 dtd_window_frames: int = 10):
         _require_numpy()
         self.samplerate = int(samplerate)
         self.frame = max(1, int(self.samplerate * frame_ms / 1000))
@@ -91,6 +94,9 @@ class NlmsAec(AecEngine):
         self.w_max = float(w_max)                # ‖w‖ 上限（真实房间回声路径增益不可能到 1 量级）
         self.bypass_ratio = float(bypass_ratio)  # 残差比输入还响 → 这一帧旁路（AEC 不该消得更差）
         self.bypass_frames = 0                   # 旁路次数（可观测：判断参考是否靠谱）
+        # DTD 的峰值窗口（帧数；10 帧 ≈ 200ms @20ms 帧）——用窗口峰值而不是单样本，
+        # 免掉「语音包络波谷时单样本比过峰值」那个坑（与旁路判据用平滑能量同源 ✓）
+        self.dtd_window_frames = max(1, int(dtd_window_frames))
         # 冷启动收敛期：系数还在学房间响应时，残差里仍有回声 —— 这段时间不能把残差当「用户说话」
         self.warmup_frames = max(1, int(warmup_ms / max(1, frame_ms)))
         self.reset()
@@ -100,10 +106,15 @@ class NlmsAec(AecEngine):
         self._w = np.zeros(self.taps, dtype=np.float32)        # 回声路径估计
         self._x = np.zeros(self.taps, dtype=np.float32)        # 参考信号延迟线
         self.frames = 0
-        self.frozen_frames = 0
+        self.frozen_frames = 0                                 # DTD 冻结（真双讲）
+        self.diverge_frames = 0                                # 发散保护冻结（滤波器学不到）
+        # ★ 2026-10-06：这两个原因**必须分开计数** ✗✓ —— 混在一起时「frozen 30~77%」这种
+        #   数字无法判断到底是 DTD 太敏感还是滤波器在发散（真机排障时正是卡在这里 ✗）。
         self._echo_pow = 0.0                                   # 滚动：估计回声能量
         self._res_pow = 0.0                                    # 滚动：残差能量
         self._mic_pow = 0.0                                    # 滚动：麦克风能量（旁路判据用平滑值）
+        self._ref_peaks = []                                   # 滚动：参考帧峰值（DTD 用）
+        self._mic_peaks = []                                   # 滚动：麦克风帧峰值（DTD 用）
 
     # ---- 主处理 ----
     def process(self, mic, ref):
@@ -140,13 +151,23 @@ class NlmsAec(AecEngine):
         self._mic_pow = 0.9 * self._mic_pow + 0.1 * mic_pow
 
 
-        # ① 双讲检测（DTD）：**初始收敛期不冻结**（否则学不到房间响应），
-        #    收敛后用「回声能量比」判：麦克风能量 ≫ 滤波器估计的回声能量 → 近端在说话。
-        #    2026-10-03 踩坑：先用的是 Geigel（|d| > 比例 × 参考近期峰值）—— 语音**包络低谷**时
-        #    |d| 相对 40ms 峰值轻易超 2 倍 → 长期误冻结（frozen 涨到 94/460 帧），ERC 只有几个 dB。
-        #    能量比判据在「包络低谷」下自洽（y 跟着回声一起小），只在真双讲时冻结。
+        # ① 双讲检测（DTD）：**窗口峰值版 Geigel** ✓✓ —— 与滤波器是否收敛**无关**。
+        #
+        # 2026-10-03 曾改成「麦克风能量 > 比例 × **滤波器估计**的回声能量」，理由是单样本 Geigel
+        # 会被语音包络波谷骗 ✗。但那条判据有致命伤 ✗✗：**弱回声 + 未收敛**时 echo_pow≈0 →
+        # `mic_pow > ≈0` **恒真** → 永远判双讲 → 永远冻结 → 权重长不起来 → **死锁**
+        # （2026-10-06 真机复现：frozen 30~77%，AEC 实际靠残余抑制器兜着 ✗）。
+        #
+        # 正解：**与参考比**（参考是已知的、不依赖收敛 ✓），并把「单样本」升级为
+        # **窗口峰值**（10 帧 ≈200ms）→ 包络波谷骗不过窗口 ✓。参考时序本会话已钉死 ✓，
+        # 所以这里的对齐可信 ✓。
+        self._ref_peaks.append(float(np.max(np.abs(x))) if x.size else 0.0)
+        self._mic_peaks.append(float(np.max(np.abs(d))) if d.size else 0.0)
+        del self._ref_peaks[:-self.dtd_window_frames]
+        del self._mic_peaks[:-self.dtd_window_frames]
+        ref_peak, mic_peak = max(self._ref_peaks), max(self._mic_peaks)
         warm = self.frames < self.warmup_frames
-        near_end = (not warm) and echo_pow > 1e-9 and mic_pow > self.dtd_ratio * echo_pow
+        near_end = (not warm) and ref_peak > 1e-6 and mic_peak > self.dtd_ratio * ref_peak
         # ② 发散保护：消完比不消还响说明滤波器被带偏了。
         # 2026-10-03 踩坑：判据写成 `res > mic` 毫无余量 —— 未收敛时残差本来就 ≈ 输入，
         # 浮点噪声让它在多数帧都成立 → 自适应几乎每帧被冻结，权重长不起来（ERLE 0.2dB）。
@@ -168,7 +189,10 @@ class NlmsAec(AecEngine):
             self._res_pow = 0.9 * self._res_pow + 0.1 * mic_pow
             diverging = False
         if near_end or diverging:
-            self.frozen_frames += 1
+            if near_end:
+                self.frozen_frames += 1            # 原因①：真双讲
+            else:
+                self.diverge_frames += 1           # 原因②：滤波器发散（学不到回声）
         else:
             # 块 NLMS 归一化：分母 = **每样本输入窗功率的均值**（≈ taps × σ²）。
             # 2026-10-03 实测踩坑（三次才对）：多除一个帧长 f 就等价于每步小 f 倍（20ms 时 20 倍）
@@ -182,6 +206,13 @@ class NlmsAec(AecEngine):
                 self._w *= self.w_max / nw
             self._w = np.clip(self._w, -4.0, 4.0)                     # 数值兜底
 
+        # ⓪" 硬不变量（**逐样点**夹）：残差不得超过同一样点的输入 ——
+        #     "AEC 不该消得更差" 的最强形式：`|e[n]| ≤ |d[n]|` ⇒ 输出峰值/功率必然 ≤ 输入 ✓✓。
+        #     只在滤波器**过冲**的那几个样点上生效，**完全不动权重**（所以不影响收敛 ✓），
+        #     也不需要阈值/平滑/余量（没有任何可调常数 ✗）。
+        #     2026-10-06 起因：解开 DTD 死锁后，滤波器会**真的去追错位的参考**（以前是死锁把它挡住的 ✗）
+        #     → 必须有一条**无条件的**兜底来守住这条不变量 ✓。
+        e = np.clip(e, -np.abs(d), np.abs(d))
         self._x = xw[-self.taps:].copy()
         self.frames += 1
         return e
@@ -202,7 +233,8 @@ class NlmsAec(AecEngine):
 
     def stats(self) -> dict:
         return {"engine": self.name, "frames": self.frames, "frozen": self.frozen_frames,
-                "bypass": self.bypass_frames, "erle_db": round(self.erle_db(), 1), "taps": self.taps}
+                "diverged": self.diverge_frames, "bypass": self.bypass_frames,
+                "erle_db": round(self.erle_db(), 1), "taps": self.taps}
 
 
 # ══════════════════════════════════════════════════════════════════
