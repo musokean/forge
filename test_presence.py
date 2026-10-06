@@ -49,6 +49,19 @@ def _face(x=40, y=30, w=80, h=80):
     return Face(x, y, w, h)
 
 
+def _steady_shift_sequence(n, delta, h=120, w=160):
+    """造 n 帧、每帧相对上一帧整体 +delta —— 稳态的「非嘴动」变化（框平移/曝光微变）。
+
+    逐帧平移而不是单次跳变：`MouthMotion` 的指数平滑会把首帧的 0 拉进来，
+    只有**稳态**序列才对应真机那种持续的量级 ✓。
+    """
+    base = np.full((h, w, 3), 100, dtype=np.int64)
+    out = []
+    for i in range(n):
+        out.append(np.clip(base + delta * i, 0, 255).astype(np.uint8))
+    return out
+
+
 class TestMouthRegion(unittest.TestCase):
     @needs_numpy
     def test_shape_is_downscaled(self):
@@ -222,6 +235,28 @@ class TestPresenceMonitor(unittest.TestCase):
         snap = mon.snapshot()
         self.assertIsNone(snap["speaking"])
         self.assertIn("分不清", snap["reason"])
+
+    @needs_numpy
+    def test_default_does_not_fire_on_the_measured_noise_floor(self):
+        """**把真机实测结论钉成回归测试** ✓✓。
+
+        实测：安静时嘴动分中位 0.0159 / max 0.0223，说话时中位 0.0199 —— 两者重叠 ✗。
+        所以默认阈值必须**高于这个噪声带**，否则会在人闭嘴时误报（旧默认 0.015 就会 ✗）。
+        这里合成一段幅度恰好等于噪声带的帧间变化（每像素 +4 → 4/255 ÷ 3 通道 ≈ 0.0157），
+        断言：**默认参数下不得判定为「在说话」** ✓。
+        """
+        frames = _steady_shift_sequence(8, 5)           # 每帧 +5 → ≈0.0196，正落在实测重叠区 ✓
+        mon = PresenceMonitor(recognizer=None)          # 用**默认** min_motion ✓
+        for t in range(len(frames)):
+            mon.observe(frames[t], [_face()], now=t * 0.1)
+        snap = mon.snapshot()
+        self.assertIsNone(snap["speaking"], f"重叠区幅度不该被判成说话：{snap}")
+        self.assertGreater(mon.min_motion, 0.0223, "默认必须高于实测噪声 max（0.0223）")
+        # 反证：旧默认 0.015 会误报 —— 说明这个测试确实在测那条边界 ✓（这才是要修的 bug）
+        old = PresenceMonitor(recognizer=None, min_motion=0.015)
+        for t in range(len(frames)):
+            old.observe(frames[t], [_face()], now=t * 0.1)
+        self.assertIsNotNone(old.snapshot()["speaking"], "旧默认 0.015 应当会误报（这正是要修的 bug）")
 
     @needs_numpy
     def test_snapshot_empty_scene(self):

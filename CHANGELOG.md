@@ -18,6 +18,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   runner-up and could never clear the margin test. A live session scored 2/10 before the fix and 10/10
   after, with same-person similarity at 0.90-0.95 against a non-face floor of -0.07-0.29.
 
+### Fixed
+
+- **The mouth-motion signal does not separate speech from silence, and the default implied it did.**
+  Measured on this machine, same person, 15 s of each: talking gives a median mouth-motion score of
+  0.0199 and sitting quietly 0.0159, maxima 0.0224 and 0.0223. The distributions overlap, so no
+  threshold separates them - raising it to 0.025 would drop the talking case as well. What dominates
+  the frame difference is the detector box jittering one to three pixels per frame rather than the
+  mouth moving. The default is now 0.03, above the measured noise band, so the feature claims a
+  clearly moving mouth and not speech; the tool description and docs say exactly that, and a
+  regression test pins the measured overlap so the stronger claim cannot creep back in. Deciding who
+  is speaking needs the audio VAD to say when someone is speaking, with vision only answering who.
+
 ### Added
 
 - **YuNet face detection (#18).** A CNN detector (OpenCV's own `FaceDetectorYN`, model ~227KB) is now
