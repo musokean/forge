@@ -297,3 +297,15 @@ class TestProbeAndTools(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestYuNetThresholdDefault(unittest.TestCase):
+    """YuNet 默认阈值回归守卫：0.7 ✓（0.9 在正常坐姿距离只检出 13% ✗，0.5 会放行 0.50 的肩膀假阳性 ✗）。"""
+
+    def test_default_threshold_is_seven_tenths(self):
+        import inspect
+
+        from forge.camera import YuNetFaceDetector
+        sig = inspect.signature(YuNetFaceDetector.__init__)
+        self.assertEqual(sig.parameters["score_threshold"].default, 0.7,
+                         "默认阈值被改了？先看 YuNetFaceDetector 文档里的实测数据再改 ✗✓")
