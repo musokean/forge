@@ -18,6 +18,7 @@
 import importlib.util
 import os
 import sys
+import shutil
 import tempfile
 import unittest
 
@@ -93,6 +94,7 @@ class TestSimilarity(unittest.TestCase):
 class TestFaceStore(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.mkdtemp(prefix="faces-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)   # 别把临时库留一地 ✗✓
         self.db = os.path.join(self.tmp, "faces.db")
         self.store = FaceStore(self.db)
         if not HAS_NUMPY:
@@ -215,6 +217,7 @@ class TestMatch(unittest.TestCase):
         if not HAS_NUMPY:
             self.skipTest("需要 numpy")
         self.tmp = tempfile.mkdtemp(prefix="faces-")
+        self.addCleanup(shutil.rmtree, self.tmp, ignore_errors=True)   # 别把临时库留一地 ✗✓
         self.store = FaceStore(os.path.join(self.tmp, "faces.db"))
 
     def tearDown(self):
@@ -311,7 +314,7 @@ class TestEmbedderFactoryAndTools(unittest.TestCase):
     def test_sface_without_model_refuses_cleanly(self):
         """没放模型就给「去哪拿、放哪里」，不假装可用（也不偷偷下载）。"""
         with self.assertRaises(FaceError) as ctx:
-            make_embedder("sface", model_path=os.path.join(tempfile.mkdtemp(), "nope.onnx"))
+            make_embedder("sface", model_path=os.path.join(tempfile.gettempdir(), "forge-nope-model.onnx"))
         msg = str(ctx.exception)
         self.assertIn("SFace", msg)
         self.assertIn("opencv_zoo", msg)
@@ -323,7 +326,7 @@ class TestEmbedderFactoryAndTools(unittest.TestCase):
         以前这里会 skip —— 测试随环境跳过是味道 ✗，改成环境无关 ✓）。
         """
         old_env = os.environ.get("FORGE_FACE_MODEL")
-        os.environ["FORGE_FACE_MODEL"] = os.path.join(tempfile.mkdtemp(), "missing.onnx")
+        os.environ["FORGE_FACE_MODEL"] = os.path.join(tempfile.gettempdir(), "forge-missing-model.onnx")
         try:
             with self.assertRaises(FaceError) as ctx:
                 make_embedder("auto")
@@ -366,7 +369,9 @@ class TestEmbedderFactoryAndTools(unittest.TestCase):
         if not (HAS_NUMPY and HAS_CV2):
             self.skipTest("需要 numpy + opencv")
         import forge.faces as faces_mod
-        tmp = os.path.join(tempfile.mkdtemp(prefix="faces-"), "empty.db")
+        _d = tempfile.TemporaryDirectory(prefix="forge-test-")
+        self.addCleanup(_d.cleanup)
+        tmp = os.path.join(_d.name, "empty.db")
         orig = faces_mod.face_defaults
         faces_mod.face_defaults = lambda: dict(orig(), db=tmp)
         try:
