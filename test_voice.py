@@ -891,3 +891,37 @@ class TestNoHeadphoneModes(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
+
+class TestStreamingSpeakerPlayingFlag(unittest.TestCase):
+    """`StreamingSpeaker.playing` = **此刻真的在出声** ✓✓（给「谁在说」的突发采样当暂停信号 ✓）。
+
+    定义必须**不含思考期** ✓：它思考时没有声音，而那正是用户可能插话的时刻 ✓ ——
+    把思考也算"在说"，突发采样就会错过那段（2026-10-06 #18-A ✓）。
+    """
+
+    def _speaker(self):
+        from forge.voice import StreamingSpeaker
+        return StreamingSpeaker(tts=object(), sink=object())
+
+    def test_quiet_at_rest(self):
+        self.assertFalse(self._speaker().playing, "没在播、队列也空 → 不该说它在出声 ✓")
+
+    def test_queued_sentence_counts_as_speaking(self):
+        sp = self._speaker()
+        sp.say("要说了")
+        self.assertTrue(sp.playing, "**即将出声**也要算在说 ✓（否则会把它自己的话当别人的 ✗）")
+
+    def test_current_handle_decides(self):
+        sp = self._speaker()
+
+        class H:
+            playing = True
+        sp._current = H()
+        self.assertTrue(sp.playing)
+        H.playing = False
+        self.assertFalse(sp.playing, "播完就立刻不算 ✓（思考期间采样要能跑 ✓）")
+
+    def test_broken_handle_does_not_raise(self):
+        sp = self._speaker()
+        sp._current = object()               # 没有 .playing 属性
+        self.assertFalse(sp.playing)

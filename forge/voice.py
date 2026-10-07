@@ -1114,6 +1114,20 @@ class StreamingSpeaker:
         if self._thread is not None and self._thread.is_alive():
             self._q.put(None)          # 哨兵只给活着的线程（线程没起来时塞进去会毒到下一轮）
 
+    @property
+    def playing(self) -> bool:
+        """此刻**是否真的在出声** ✓✓ —— 给「谁在说话」的突发采样当暂停信号用 ✓。
+
+        定义刻意**不含思考/合成等待之外的空档**：只看「当前这句是否在播」✓ 或「队列里还有待播的句子」✓。
+        这么定是因为：它**思考期间是没有声音的** ✓，而那一刻恰恰是用户可能开口插话的时候 ✓ ——
+        把思考也算成"在说"就会漏掉那段采样 ✗✓（2026-10-06 #18-A ✓）。
+        """
+        with self._lock:
+            cur = self._current
+        if cur is not None and getattr(cur, "playing", False):
+            return True
+        return not self._q.empty()
+
     def finish(self, timeout=60.0) -> bool:
         """等队列排空且当前这句播完（**不是等线程退出**——线程要等 close() 的哨兵）。"""
         end = time.time() + timeout
@@ -1324,7 +1338,7 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
                                on_event=None, barge_ms: int = 300, timeout_s: float = 60.0,
                                half_duplex: bool = False, guard_ms: int = 300,
                                ptt=None, aec=None, ref_tap=None, aec_lead_ms: int = 120,
-                               suppressor=None, ambient_fn=None) -> dict:
+                               suppressor=None, ambient_fn=None, burst=None) -> dict:
     """Phase 2/3 主循环：流式转写 → 流式应答（句级合成播放）→ 播放期间可抢话。
 
     **不用耳机也能用的两种模式**（默认全双工 = 假设你戴了耳机）：
@@ -1358,6 +1372,9 @@ async def streaming_voice_loop(agent, stt: STTEngine, tts: TTSEngine,
     listener.start()
     splitter = splitter or SentenceSplitter()
     speaker = StreamingSpeaker(tts, sink or NullSink())
+    if burst is not None:                   # #18-A：突发采样必须知道「它自己在不在出声」✓✓
+        burst.paused = lambda: speaker.playing    # 不接：半双工只闭主循环的麦 ✗ → 会把它自己的声音当成别人在说 ✗
+        burst.start()
     ptt_down = False
     if ptt is not None:                     # PTT：不按不采集（外放也不会听自己）
         listener.set_muted(True)
@@ -1586,6 +1603,8 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
     #   注意：这一段必须**在 `if aec:` 之外** ✗✓ —— 一开始插在块内，结果 AEC 一关它就静默失效 ✗；
     #   而且此前用了 `emit(...)`，那是别的函数的局部名 ✗ → NameError 直接把整轮语音崩掉 ✗✓（跑起来才发现 ✓）。
     probe = None
+    gate = None
+    burst = None
     if identify:
         try:
             from .faces import FaceStore, face_defaults, make_embedder
@@ -1596,11 +1615,28 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
                 _store, _emb = FaceStore(_fd["db"]), make_embedder()
             except Exception:
                 _store = _emb = None            # 没模型/库为空 → 只报「几个人」✓，不假装有名字 ✗
-            probe = PresenceProbe(interval_s=1.0, store=_store, embedder=_emb).start()
-            print("[现场身份] 已开启：后台 ~1Hz 看一眼画面，结果注入每轮对话（默认关 ✓ 隐私优先 ✓）")
+            probe = PresenceProbe(interval_s=1.0, store=_store, embedder=_emb,
+                                  av_result=lambda: (burst.last_result if burst is not None else None)).start()
+            # 同时起「谁在说话」的突发采样 ✓✓：**只在检测到人声时**连开摄像头跑 ~10fps ✓
+            # （1Hz 探针的"嘴动"是 1 秒粒度的模糊量 ✗，做不了「嘴动×音频」互相关 ✗✓）
+            from .presence import SpeechBurst
+            # ⚠️ 别再写 `from .voice import LiveSpeechGate, SoundDeviceSource` ✗✓ ——
+            #   在 voice.py **自己内部**导入自己的名字，会把它们变成 run_voice 的**局部变量** ✗
+            #   → 函数前面那行 `src = SoundDeviceSource()` 立刻 UnboundLocalError ✗✗（2026-10-06 实测 ✓）。
+            #   本模块里它们**本来就在作用域** ✓，直接用即可 ✓。
+            gate = LiveSpeechGate(SoundDeviceSource()).start()
+            burst = SpeechBurst(probe._mon, gate, verbose=True).start()
+            print("[现场身份] 已开启：~1Hz 看画面 + **有人说话时连开采样判「谁在说」**（默认关 ✓ 隐私优先 ✓）")
         except Exception as exc:                # 摄像头侧出问题**不能**拖垮语音 ✓
             print("[现场身份] 不可用（不影响语音 ✓）：%s" % str(exc)[:80])
             probe = None
+            for _c in (burst, gate, probe):
+                try:
+                    if _c is not None:
+                        _c.close()
+                except Exception:
+                    pass
+            gate = burst = probe = None
     if aec and str(aec).lower() not in ("none", "off", "0"):
         # AEC 需要「正在播的音频」当参考信号 ⇒ 播放必须在进程内（ffplay 是外部进程，拿不到样本）
         aec_engine = make_aec(aec, samplerate=16000)
@@ -1641,13 +1677,21 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
         print("   （说「退出」/「exit」结束；**它说话时你直接开口就能插话**。消得不够就调 --aec-lead-ms 或降音量）")
     else:
         print("   （说「退出」/「exit」结束；说话时可直接插话打断；外放请加 --half-duplex / --ptt / --aec）")
-    return asyncio.run(streaming_voice_loop(
-        agent, ambient_fn=(probe.ambient_for_answer if probe is not None else None),
-        stt=stt, tts=tts, source=src, sink=sink_obj,
-                                             max_rounds=rounds, barge_ms=barge_ms,
-                                             half_duplex=half_duplex,
-                                             ptt=KeyHold() if ptt else None,
-                                             aec=aec_engine, ref_tap=ref_tap, suppressor=suppressor,
-                                             aec_lead_ms=aec_lead_ms,
-                                             on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}",
-                                                                       flush=True)))
+    try:
+        return asyncio.run(streaming_voice_loop(
+            agent, ambient_fn=(probe.ambient_for_answer if probe is not None else None),
+            stt=stt, tts=tts, source=src, sink=sink_obj,
+            keep_alive=True, max_rounds=rounds, barge_ms=barge_ms,
+            half_duplex=half_duplex,
+            ptt=KeyHold() if ptt else None,
+            aec=aec_engine, ref_tap=ref_tap, suppressor=suppressor,
+            aec_lead_ms=aec_lead_ms, burst=burst,
+            on_event=lambda ev: print(f"   · {ev.kind} {ev.data or ''}", flush=True)))
+    finally:
+        # 收尾：突发采样/音频门控/探针都要停（不然相机会一直被占 ✗✓）
+        for _c in (burst, gate, probe):
+            try:
+                if _c is not None:
+                    _c.close()
+            except Exception:
+                pass

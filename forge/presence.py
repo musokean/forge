@@ -536,7 +536,7 @@ class SpeechBurst:
 
     def __init__(self, monitor, gate, av: Optional["AvSpeaker"] = None, source=None, detector=None,
                  *, fps: float = 10.0, stop_silence_s: float = 0.6, max_burst_s: float = 20.0,
-                 min_loud_ms: int = 200, clock=None, paused=None):
+                 min_loud_ms: int = 200, clock=None, paused=None, verbose: bool = False):
         self.monitor = monitor
         self.gate = gate
         self.av = av if av is not None else AvSpeaker()
@@ -551,6 +551,7 @@ class SpeechBurst:
         #   突发采样用的是**独立**的音频流 ✓ → 不暂停就会把 forge 自己的声音当成"有人在说" ✗✓
         #   （于是采样期间嘴动与声音根本不同步 → 判定必错 ✗）。接线时传 `PlaybackHandle.playing` ✓。
         self.paused = paused
+        self.verbose = bool(verbose)      # 验收时把判定打出来 ✓（数字才是证据 ✓）
         self._bursting = False
         self._t0 = 0.0
         self._quiet_since: Optional[float] = None
@@ -636,6 +637,12 @@ class SpeechBurst:
             out["names"] = names
             out["frames"] = self.frames
             self.last_result = out               # ← 记住，给注入用 ✓
+            if self.verbose:
+                _nm = (out.get("names") or {}).get(out.get("track_id")) if out.get("track_id") is not None else None
+                print("[谁在说] %s（%.1fs、%d 帧）" % (
+                    ("%s · r=%.2f · 延迟%.2fs" % (_nm or ("#%s" % out["track_id"]), out.get("corr", 0.0), out.get("lag", 0.0))
+                     if out.get("track_id") is not None else "分不出：" + str(out.get("reason"))),
+                    (self.clock() - self._t0), out.get("frames", 0)), flush=True)
             return out
         return None
 
