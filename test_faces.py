@@ -501,3 +501,103 @@ class TestFaceStoreIsThreadSafe(unittest.TestCase):
         stop.set()
         th.join(timeout=10)
         self.assertEqual(errs, [], "并发读写不该出错 ✓")
+
+class TestFaceToolsHoldTheCamera(unittest.TestCase):
+    """★★ 脸部工具**必须独占相机** ✓✓ —— 真因就是"两个工具同时开摄像头 = 原生崩" ✗✗。
+
+    2026-10-07 三次同点崩溃（探针+工具 / 探针+突发 / **工具×工具**）；最后一次的日志直接钉死了：
+    模型一次并发调用了 `face_people, face_who` ✓，而 `face_who` **不走 `grab_frame`** ✗ ——
+    它自己 `OpenCvFrameSource.open()` ✓ → **绕过了 `_CAMERA_LOCK`** ✗ → 两个 `VideoCapture` 同时开
+    → OpenCV 原生层终止、**rc=127、无 traceback** ✗✓。
+
+    这条测试把相机换成假的、数**同时在"开"的人数** ✓：必须恒为 1 ✓；并**反证**（撤掉独占）不许通过 ✗。
+    """
+
+    class _FakeSource:
+        """数并发：进入 open 时 +1，close 时 -1，记录峰值 ✓"""
+        peak = 0
+        live = 0
+        lock = None
+
+        def __init__(self, index=0):
+            pass
+
+        def open(self):
+            with TestFaceToolsHoldTheCamera._FakeSource.lock:
+                TestFaceToolsHoldTheCamera._FakeSource.live += 1
+                TestFaceToolsHoldTheCamera._FakeSource.peak = max(
+                    TestFaceToolsHoldTheCamera._FakeSource.peak,
+                    TestFaceToolsHoldTheCamera._FakeSource.live)
+            # ★ 必须**停在 open 里一会儿** ✓✓：否则两次调用根本不重叠 → 测试是空的 ✗✓
+            #   （2026-10-07 实测：不加这句，把独占换成空上下文**峰值仍是 1** → 反证反不掉 ✗✗）
+            time.sleep(0.15)
+
+        def close(self):
+            with TestFaceToolsHoldTheCamera._FakeSource.lock:
+                TestFaceToolsHoldTheCamera._FakeSource.live -= 1
+
+        def read(self):
+            return None
+
+    class _FakeDetector:
+        def detect(self, image):
+            return []
+
+    class _FakeEmbedder:
+        """够用就行：只要求 `_embedder()` 能拿到一个东西 ✓（真崩点在相机 ✗✓）。"""
+        def embed(self, *a, **k):
+            return [0.0] * 8
+
+    class _FakeFrame:
+        image = None
+
+    def _run_concurrent(self, func, n=2):
+        import threading
+        from unittest import mock
+        import forge.camera as cam
+        import forge.faces as F
+
+        T = TestFaceToolsHoldTheCamera
+        T._FakeSource.peak = T._FakeSource.live = 0
+        T._FakeSource.lock = threading.Lock()
+        # 每个线程各自延迟一点，制造真正的重叠 ✓
+        errs = []
+        def call(_i):
+            with mock.patch.object(cam, "OpenCvFrameSource", T._FakeSource), \
+                 mock.patch.object(cam, "make_detector", lambda *_a, **_k: T._FakeDetector()), \
+                 mock.patch.object(F, "make_embedder", lambda *_a, **_k: T._FakeEmbedder()):
+                try:
+                    func()
+                except Exception as e:
+                    errs.append("%s: %s" % (type(e).__name__, e))    # ★ 不许静默吞 ✗✓
+        ths = [threading.Thread(target=call, args=(i,)) for i in range(n)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join(timeout=10)
+        T.last_errors = errs
+        return T._FakeSource.peak
+        ths = [threading.Thread(target=call, args=(i,)) for i in range(n)]
+        for th in ths:
+            th.start()
+        for th in ths:
+            th.join(timeout=10)
+        return T._FakeSource.peak
+
+    @staticmethod
+    def _fn(name):
+        """工具在**注册表**里 ✓（不是模块属性 ✗）—— 从那儿取真身 ✓。"""
+        from forge import tools as toolmod
+        return toolmod.TOOLS[name]["fn"]
+
+    def test_two_face_who_calls_never_overlap(self):
+        fn = self._fn("face_who")
+        peak = self._run_concurrent(lambda: fn(0))
+        self.assertEqual(peak, 1, "两个 face_who 同时开摄像头了 ✗（真机就是这么崩的）：峰值 %d；异常=%s"
+                         % (peak, TestFaceToolsHoldTheCamera.last_errors))
+
+    def test_two_face_enroll_calls_never_overlap(self):
+        fn = self._fn("face_enroll")
+        peak = self._run_concurrent(lambda: fn("甲", samples=1))
+        self.assertEqual(peak, 1, "两个 face_enroll 同时开摄像头了 ✗：峰值 %d；异常=%s"
+                         % (peak, TestFaceToolsHoldTheCamera.last_errors))

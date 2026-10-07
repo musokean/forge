@@ -504,6 +504,18 @@ class FaceStore:
 # 配置（config 的 face: 段；命令行/环境变量优先）
 
 
+
+def _hold_camera():
+    """`camera.hold_camera()` 的模块级别名 ✓ —— 工具里再用它包住整段 ✓。
+
+    ⚠️ 为什么不在工具函数内 `from .camera import hold_camera` ✗✓：那样 `hold_camera` 会变成该函数的
+    **局部名** ✓，一旦同函数里还有别的地方用到同名（或后续补丁顺序错位）就 UnboundLocalError ✗
+    （2026-10-06 在 `voice.py` 里被这条坑过一次 ✓✓）。
+    """
+    from .camera import hold_camera
+    return hold_camera()
+
+
 def face_defaults() -> dict:
     """读取人脸相关配置。优先级：环境变量 > config 的 face: 段 > 默认值。"""
     out = {
@@ -624,30 +636,37 @@ def register_face_tools() -> bool:
         read_only=True,
     )
     def face_who(index: int = 0) -> str:
-        from .camera import OpenCvFrameSource, capture, make_detector
+        # ★★ 整段纳入**相机独占** ✓✓（2026-10-07 抓到真因 ✗✓）：
+        #   这条工具**不走 `grab_frame`** ✗ —— 它直接 `OpenCvFrameSource.open()` + `capture()` ✓✓，
+        #   于是**完全绕过了 `_CAMERA_LOCK`** ✗。而 Hermes 会**并发执行**工具调用 ✓✓：
+        #   `face_people, face_who` 一起来 → 两个使用者**同时开摄像头** → **OpenCV 原生崩、rc=127、无 traceback** ✗✗
+        #   （今天三次同点崩溃里，这就是"工具 × 工具"那一次 ✓）。
+        #   所以：**相机 + 模型 + 取特征整段**都要在锁里 ✓ —— 全场同一时刻只有一个使用者 ✓✓。
+        from .camera import OpenCvFrameSource, capture, hold_camera, make_detector
         d = face_defaults()
-        emb = _embedder()
-        det = make_detector(d["detector"])          # 有 YuNet 就用 YuNet（更稳 + 能对齐）✓
-        src = OpenCvFrameSource(index=int(index))
-        try:
-            src.open()
-            frame, faces = capture(src, det)
-        finally:
-            src.close()
-        if not faces:
-            return "画面里没有人（或没检测到正脸）。"
-        lines = []
-        st = _store()
-        try:
-            for i in range(len(faces)):
-                v, _how = embed_face(emb, frame.image, det, i)     # 走对齐那条更准的路 ✓
-                m = st.match(v, d["threshold"], d["margin"])
-                who = m.name if not m.unknown else "未知"
-                lines.append(f"#{i} {who}（相似度 {m.score:.3f}"
-                             + ("" if not m.unknown else f"，原因：{m.reason}") + "）")
-        finally:
-            st.close()
-        return f"画面里 {len(faces)} 张脸：" + "；".join(lines)
+        with hold_camera():
+            emb = _embedder()
+            det = make_detector(d["detector"])      # 有 YuNet 就用 YuNet（更稳 + 能对齐）✓
+            src = OpenCvFrameSource(index=int(index))
+            try:
+                src.open()
+                frame, faces = capture(src, det)
+            finally:
+                src.close()
+            if not faces:
+                return "画面里没有人（或没检测到正脸）。"
+            lines = []
+            st = _store()
+            try:
+                for i in range(len(faces)):
+                    v, _how = embed_face(emb, frame.image, det, i)     # 走对齐那条更准的路 ✓
+                    m = st.match(v, d["threshold"], d["margin"])
+                    who = m.name if not m.unknown else "未知"
+                    lines.append(f"#{i} {who}（相似度 {m.score:.3f}"
+                                 + ("" if not m.unknown else f"，原因：{m.reason}") + "）")
+            finally:
+                st.close()
+            return f"画面里 {len(faces)} 张脸：" + "；".join(lines)
 
     @tool(
         name="face_enroll",
@@ -663,40 +682,43 @@ def register_face_tools() -> bool:
         read_only=False,
     )
     def face_enroll(name: str, samples: int = 0, index: int = 0) -> str:
-        from .camera import OpenCvFrameSource, make_detector
-        d = face_defaults()
-        n = max(1, int(samples or d["samples"]))
-        emb = _embedder()
-        det = make_detector(d["detector"])
-        vecs, has_align, misses = [], 0, 0
-        src = OpenCvFrameSource(index=int(index))
-        try:
-            src.open()
-            for _ in range(n):
-                frame = src.read()
-                if frame is None:
-                    misses += 1
-                    continue
-                try:
-                    vec, how = embed_face(emb, frame.image, det, 0)
-                except FaceError:                      # 这一帧没检测到脸
-                    misses += 1
-                    continue
-                vecs.append(vec)
-                has_align += 1 if how == "对齐" else 0
-        finally:
-            src.close()
-        if not vecs:
-            raise FaceError(f"登记失败：{n} 帧里一帧都没检测到人脸（请正对摄像头、光线足一些）")
-        st = _store()
-        try:
-            res = st.enroll(name, vecs, source=emb.name)
-        finally:
-            st.close()
-        how = f"（{has_align}/{len(vecs)} 张走了关键点对齐）" if has_align else "（未做关键点对齐）"
-        return (f"已登记 {res['name']}：新增 {res['added']} 张向量，共 {res['total']} 张"
-                + ("（新名字）" if res["new_person"] else "（追加到已有名字）") + how
-                + (f"；有 {misses} 帧没检测到人脸" if misses else ""))
+        # ★ 同 face_who：整段纳入**相机独占** ✓✓ —— 这条**也不走 `grab_frame`** ✗，
+        #   而且它会**占着相机好几秒**（采 12 帧 ✓）→ 与其它工具/突发采样并发就**原生崩** ✗✓。
+        with _hold_camera():
+            from .camera import OpenCvFrameSource, make_detector
+            d = face_defaults()
+            n = max(1, int(samples or d["samples"]))
+            emb = _embedder()
+            det = make_detector(d["detector"])
+            vecs, has_align, misses = [], 0, 0
+            src = OpenCvFrameSource(index=int(index))
+            try:
+                src.open()
+                for _ in range(n):
+                    frame = src.read()
+                    if frame is None:
+                        misses += 1
+                        continue
+                    try:
+                        vec, how = embed_face(emb, frame.image, det, 0)
+                    except FaceError:                      # 这一帧没检测到脸
+                        misses += 1
+                        continue
+                    vecs.append(vec)
+                    has_align += 1 if how == "对齐" else 0
+            finally:
+                src.close()
+            if not vecs:
+                raise FaceError(f"登记失败：{n} 帧里一帧都没检测到人脸（请正对摄像头、光线足一些）")
+            st = _store()
+            try:
+                res = st.enroll(name, vecs, source=emb.name)
+            finally:
+                st.close()
+            how = f"（{has_align}/{len(vecs)} 张走了关键点对齐）" if has_align else "（未做关键点对齐）"
+            return (f"已登记 {res['name']}：新增 {res['added']} 张向量，共 {res['total']} 张"
+                    + ("（新名字）" if res["new_person"] else "（追加到已有名字）") + how
+                    + (f"；有 {misses} 帧没检测到人脸" if misses else ""))
 
     @tool(
         name="face_note",
