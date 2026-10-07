@@ -1569,7 +1569,8 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
               barge_ms: int = 300, stt: STTEngine = None, tts: TTSEngine = None,
               stt_model: str = "base", stream: bool = True, file_loop: bool = False,
               half_duplex: bool = False, ptt: bool = False,
-              aec: str = None, aec_lead_ms: int = 120, identify: bool = False) -> dict:
+              aec: str = None, aec_lead_ms: int = 120, identify: bool = False,
+              voice_burst: bool = False) -> dict:
     """命令行入口：`forge --voice [--audio-source mic|file:PATH] [--voice-rounds N] [--voice-sink null]`。
 
     `--audio-source file:xxx.wav` = **不用麦克风也能跑完整语音链路**（L2 自测/回归用）。

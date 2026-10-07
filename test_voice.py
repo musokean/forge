@@ -925,3 +925,29 @@ class TestStreamingSpeakerPlayingFlag(unittest.TestCase):
         sp = self._speaker()
         sp._current = object()               # 没有 .playing 属性
         self.assertFalse(sp.playing)
+
+class TestRunVoiceSignatureAcceptsCliKwargs(unittest.TestCase):
+    """★ 回归守卫：`main.py` 传给 `run_voice` 的每个关键字，**签名里必须都有** ✓✓。
+
+    2026-10-06 就栽在这：我在 `main.py` 传了 `voice_burst=`，改 `run_voice` 签名的那次
+    `replace()` **没命中、静默什么都没做** ✗✓ → `--voice` 一起来就
+    `TypeError: run_voice() got an unexpected keyword argument 'voice_burst'` ✗✗
+    —— 而且**单测全绿**（单测都 mock 了 run_voice ✓），只有真跑 CLI 才炸 ✓✓。
+
+    所以这条测试**直接对着 CLI 的调用点**检查 ✓：把 `main.py` 里 `run_voice(...)` 那一段的
+    关键字参数提出来，逐个核对签名 ✓ —— 这类"改了一头忘了另一头"的错从此跑不掉 ✓。
+    """
+
+    def test_every_cli_kwarg_exists_in_signature(self):
+        import inspect
+        import re
+        from forge.voice import run_voice
+
+        root = os.path.dirname(os.path.abspath(__file__))
+        src = open(os.path.join(root, "main.py"), encoding="utf-8", errors="replace").read()
+        i = src.index("run_voice(agent,")
+        seg = src[i:src.index(")", src.index("aec_lead_ms=", i))]
+        passed = set(re.findall(r"(\w+)\s*=", seg))
+        params = set(inspect.signature(run_voice).parameters)
+        missing = sorted(passed - params)
+        self.assertEqual(missing, [], "main.py 传了 run_voice 不认识的参数 ✗ → 启动即 TypeError：%s" % missing)
