@@ -570,7 +570,17 @@ class SpeechBurst:
             self._hold = hold_camera()
             self._hold.__enter__()
             self.source = OpenCvFrameSource(index=0)
-        self.source.open()                   # 注入进来的源也要 open ✓（测试就靠这条 ✓）
+        last = None
+        for attempt in range(3):             # ★ 重试：DSHOW 抢开失败常是瞬时的 ✓✓
+            try:
+                self.source.open()
+                last = None
+                break
+            except Exception as exc:
+                last = exc
+                time.sleep(0.15)
+        if last is not None:
+            raise last
         if self.detector is None:
             from .camera import make_detector
             self.detector = make_detector()
@@ -609,16 +619,36 @@ class SpeechBurst:
             speaking = False
         if not self._bursting:
             if speaking and self.gate.loud_ms() >= self.min_loud_ms:
-                self._open()
+                try:
+                    self._open()
+                except Exception as exc:          # ★ 相机开不起来**必须说话** ✗✓
+                    # （2026-10-06 实测：线程里 `except Exception: pass` 把 CameraError 静默吞了 ✗
+                    #   → 现场只看到"0 帧"，完全没有线索 ✗✓）
+                    if not self.last_error:
+                        self.last_error = "%s: %s" % (type(exc).__name__, exc)
+                        print("[现场身份] 突发采样开不了相机（只报一次）：%s" % self.last_error, flush=True)
+                    self._close()
+                    return None
                 self._bursting = True
                 self._t0 = now
                 self._quiet_since = None
                 self._last_frame_t = -1.0
+                self._blank_reads = 0
+                self._hold_ms = 0.0
                 self.bursts += 1
             return None
         if now - self._last_frame_t >= 1.0 / self.fps:
             self._last_frame_t = now
             self._read_one(now)
+        # ★ 连续 N 帧空 → 相机"开着但读不出"（DSHOW 抢开后常见）✗✓ → 别傻等满 20 秒 ✓
+        if self._bursting and self.frames == 0 and getattr(self, "_blank_reads", 0) >= 12:
+            self._close()
+            self._bursting = False
+            self.last_error = self.last_error or "相机打开了但连读 %d 帧皆空（多为驱动抢开后的坏状态）" % self._blank_reads
+            if self.verbose:
+                print("[现场身份] %s —— 这轮跳过 ✓" % self.last_error, flush=True)
+            return {"track_id": None, "corr": 0.0, "margin": 0.0, "lag": 0.0, "names": {},
+                    "frames": 0, "reason": "相机读不出帧（%d 次皆空）" % self._blank_reads}
         if speaking:
             self._quiet_since = None
         elif self._quiet_since is None:
@@ -676,7 +706,9 @@ class SpeechBurst:
                 print("[现场身份] 突发采样取帧失败（只报一次）：%s" % self.last_error)
             return
         if frame is None:
+            self._blank_reads = getattr(self, "_blank_reads", 0) + 1
             return
+        self._blank_reads = 0
         image = getattr(frame, "image", frame)
         try:
             faces = self.detector.detect(image)

@@ -841,3 +841,76 @@ class TestSpeechBurstPausesWhileAgentTalks(unittest.TestCase):
         self.assertIsNone(b.step())
         self.assertFalse(b.bursting, "说话时必须停下 ✓")
         self.assertEqual(src.closed, 1, "并且**立刻放掉相机** ✓✓")
+
+class TestSpeechBurstReportsCameraTrouble(unittest.TestCase):
+    """★ 相机出问题**必须留痕** ✗✓ —— 2026-10-06 真机栽过：线程里的 `except Exception: pass`
+    把 `CameraError` 静默吞了 ✗ → 现场只看到「0 帧」，**一句线索都没有** ✗✗。
+
+    另：DSHOW 抢开后会出现「`isOpened()` 说开着、但一帧都读不出」的坏状态 ✗✓ ——
+    不能傻等满 `max_burst_s`（20 秒 ✓），要**早停并说清** ✓。
+    """
+
+    class Gate:
+        loud = True
+        def speaking(self):
+            return True
+        def loud_ms(self):
+            return 500
+        def energy_series(self, since_mono=None):
+            return []
+
+    def _burst(self, src, **kw):
+        from forge.presence import SpeechBurst
+        now = {"t": 100.0}
+        clock = lambda: now["t"]
+
+        class M:
+            class T:
+                def active(self):
+                    return []
+            tracker = T()
+            def observe(self, frame, faces, now=None):
+                return []
+        b = SpeechBurst(M(), TestSpeechBurstReportsCameraTrouble.Gate(), source=src, detector=None,
+                        clock=clock, verbose=False, **kw)
+        return b, now
+
+    def test_open_failure_is_reported_once_not_swallowed(self):
+        """开相机抛错 → `last_error` 必须有内容 ✓✓（不许静默 ✗）。"""
+        class BadSrc:
+            opened = 0
+            def open(self):
+                BadSrc.opened += 1
+                raise RuntimeError("模拟打不开摄像头")
+            def close(self):
+                pass
+            def read(self):
+                return None
+        b, now = self._burst(BadSrc())
+        b.step()
+        self.assertIn("模拟打不开摄像头", b.last_error, "开相机失败必须留痕 ✗")
+        self.assertFalse(b.bursting, "开不起来就不该处于突发状态 ✓")
+        self.assertGreaterEqual(BadSrc.opened, 2, "应当**重试**过（DSHOW 抢开是瞬时的 ✓）：%d" % BadSrc.opened)
+
+    def test_dead_capture_stops_early_and_says_why(self):
+        """开着但一直读空 → **早停** ✓ 并给出原因 ✓（不是干等 20 秒 ✗）。"""
+        class DeadSrc:
+            closed = 0
+            def open(self):
+                pass
+            def close(self):
+                DeadSrc.closed += 1
+            def read(self):
+                return None                      # 永远空 → 坏状态 ✓
+        b, now = self._burst(DeadSrc(), fps=50.0)
+        out = None
+        for _ in range(60):
+            now["t"] += 0.05
+            out = b.step()
+            if out is not None:
+                break
+        self.assertIsNotNone(out, "读不到帧就该早停并给结论 ✓")
+        self.assertIsNone(out["track_id"])
+        self.assertIn("读不出帧", out["reason"])
+        self.assertEqual(DeadSrc.closed, 1, "早停时必须放掉相机 ✓")
+        self.assertLess(now["t"] - 100.0, 5.0, "不能傻等满 max_burst_s ✗")
