@@ -1516,6 +1516,7 @@ def main() -> None:
                   half_duplex=("--half-duplex" in argv) or bool(_vd["half_duplex"]),
                   ptt=("--ptt" in argv) or bool(_vd["ptt"]),   # 按住空格说话（免耳机）
                   identify=("--identify" in argv),        # #18 现场身份：开摄像头看一眼「在跟谁说话」（默认关 ✓）
+              voice_burst=("--voice-burst" in argv),  # #18-A「谁在说」的突发采样（**默认关** ✓ —— 真机仍有崩溃待查 ✓）
                   aec=_aec,                               # 回声消除（真免手：它说话时你也能插话）
                   aec_lead_ms=_opt("--aec-lead-ms", _vd["aec_lead_ms"], int) or 0)  # 0=自动按设备推算
         return

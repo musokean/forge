@@ -1619,13 +1619,20 @@ def run_voice(agent, audio_source: str = "mic", rounds: int = 0, sink: str = "sp
                                   av_result=lambda: (burst.last_result if burst is not None else None)).start()
             # 同时起「谁在说话」的突发采样 ✓✓：**只在检测到人声时**连开摄像头跑 ~10fps ✓
             # （1Hz 探针的"嘴动"是 1 秒粒度的模糊量 ✗，做不了「嘴动×音频」互相关 ✗✓）
+            # #18-A「谁在说」的突发采样：**默认关** ✗✓ —— 真机在"第一次有人说话"时会崩（rc=127、无 traceback ✓），
+            #   而两种受控复现（顺序 / 并发）都通过 ✓ → 说明冲突在**完整循环**里（AEC + 扬声器 + 主循环麦克风
+            #   + 探针 + 突发采样 这一堆同时用设备 ✓）。在查清之前**不让它拖累 `--identify`** ✓✓：显式 `--voice-burst` 才开。
             from .presence import SpeechBurst
             # ⚠️ 别再写 `from .voice import LiveSpeechGate, SoundDeviceSource` ✗✓ ——
             #   在 voice.py **自己内部**导入自己的名字，会把它们变成 run_voice 的**局部变量** ✗
             #   → 函数前面那行 `src = SoundDeviceSource()` 立刻 UnboundLocalError ✗✗（2026-10-06 实测 ✓）。
             #   本模块里它们**本来就在作用域** ✓，直接用即可 ✓。
-            gate = LiveSpeechGate(SoundDeviceSource()).start()
-            burst = SpeechBurst(probe._mon, gate, verbose=True).start()
+            if voice_burst:
+                gate = LiveSpeechGate(SoundDeviceSource()).start()
+                burst = SpeechBurst(probe._mon, gate, verbose=True).start()
+                print("[谁在说] 突发采样已开启（实验特性 ✓）")
+            else:
+                print("[谁在说] 突发采样未开启（加 --voice-burst 可试；真机仍有崩溃待查 ✗）")
             print("[现场身份] 已开启：~1Hz 看画面 + **有人说话时连开采样判「谁在说」**（默认关 ✓ 隐私优先 ✓）")
         except Exception as exc:                # 摄像头侧出问题**不能**拖垮语音 ✓
             print("[现场身份] 不可用（不影响语音 ✓）：%s" % str(exc)[:80])
