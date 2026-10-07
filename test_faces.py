@@ -562,19 +562,35 @@ class TestFaceToolsHoldTheCamera(unittest.TestCase):
         T._FakeSource.lock = threading.Lock()
         # 每个线程各自延迟一点，制造真正的重叠 ✓
         errs = []
+        # ★★ 绝不碰**真的人脸库** ✗✗（2026-10-07 栽过：假测试把「甲」写进了 ~/.forge/faces.db ✓✗）
+        #   把 `face_defaults` 指到**临时库** ✓，并用 addCleanup 收尾 ✓（项目铁律 ✓）。
+        import tempfile
+        tmpd = tempfile.TemporaryDirectory()
+        self.addCleanup(tmpd.cleanup)
+        faketmp = os.path.join(tmpd.name, "faces.db")
+        real_defaults = F.face_defaults
+
+        def _temp_defaults():
+            d = dict(real_defaults())
+            d["db"] = faketmp
+            return d
+
         def call(_i):
-            with mock.patch.object(cam, "OpenCvFrameSource", T._FakeSource), \
-                 mock.patch.object(cam, "make_detector", lambda *_a, **_k: T._FakeDetector()), \
-                 mock.patch.object(F, "make_embedder", lambda *_a, **_k: T._FakeEmbedder()):
-                try:
-                    func()
-                except Exception as e:
-                    errs.append("%s: %s" % (type(e).__name__, e))    # ★ 不许静默吞 ✗✓
-        ths = [threading.Thread(target=call, args=(i,)) for i in range(n)]
-        for th in ths:
-            th.start()
-        for th in ths:
-            th.join(timeout=10)
+            try:
+                func()
+            except Exception as e:
+                errs.append("%s: %s" % (type(e).__name__, e))    # ★ 不许静默吞 ✗✓
+        # ★ 补丁必须**打在整段并发之外** ✓✓：早先在**每个线程内**各自 patch，两个线程互相抢先
+        #   patch/unpatch ✗ → 有线程跑在**未打补丁**的窗口里 → 又写进了**真库** ✗✗（2026-10-07 实测 ✓）。
+        with mock.patch.object(cam, "OpenCvFrameSource", T._FakeSource), \
+             mock.patch.object(cam, "make_detector", lambda *_a, **_k: T._FakeDetector()), \
+             mock.patch.object(F, "make_embedder", lambda *_a, **_k: T._FakeEmbedder()), \
+             mock.patch.object(F, "face_defaults", _temp_defaults):
+            ths = [threading.Thread(target=call, args=(i,)) for i in range(n)]
+            for th in ths:
+                th.start()
+            for th in ths:
+                th.join(timeout=10)
         T.last_errors = errs
         return T._FakeSource.peak
         ths = [threading.Thread(target=call, args=(i,)) for i in range(n)]
